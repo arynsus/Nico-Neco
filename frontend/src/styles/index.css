@@ -1,0 +1,102 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+@layer components {
+  .glass-header {
+    @apply bg-white/80 backdrop-blur-xl;
+  }
+
+  .btn-primary {
+    @apply bg-primary text-on-primary px-6 py-3 rounded-full font-bold
+           shadow-lg shadow-primary/20 hover:scale-[1.02] active:scale-95
+           transition-all flex items-center justify-center gap-2;
+  }
+
+  .btn-secondary {
+    @apply text-primary hover:bg-primary-container px-6 py-3 rounded-full
+           font-semibold transition-all flex items-center justify-center gap-2;
+  }
+
+  .btn-ghost {
+    @apply p-2.5 rounded-full hover:bg-surface-container-high
+           text-on-surface-variant transition-all;
+  }
+
+  .card {
+    @apply bg-surface-container rounded-[1rem] p-6 transition-all duration-300;
+  }
+
+  .card-hover {
+    @apply hover:bg-surface-container-high;
+  }
+
+  .input-field {
+    @apply bg-surface-container-highest border-none rounded-[1.5rem] px-6 py-3
+           text-sm text-on-surface focus:ring-2 focus:ring-primary/20
+           focus:outline-none w-full;
+  }
+
+  .label-text {
+    @apply text-[10px] uppercase tracking-[0.2em] text-on-surface-variant font-bold mb-1 block;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold;
+  }
+
+  .chip-primary {
+    @apply chip bg-primary-container text-on-primary-container;
+  }
+
+  .chip-secondary {
+    @apply chip bg-secondary-container text-on-secondary-container;
+  }
+
+  .chip-tertiary {
+    @apply chip bg-tertiary-container text-on-tertiary-container;
+  }
+
+  .chip-outline {
+    @apply chip bg-surface-container-highest text-on-surface-variant;
+  }
+
+  .status-dot {
+    @apply w-2 h-2 rounded-full;
+  }
+
+  .page-title {
+    @apply text-4xl lg:text-5xl font-extrabold text-on-surface tracking-tight leading-none;
+  }
+
+  .page-subtitle {
+    @apply text-primary font-bold uppercase tracking-[0.2em] text-xs mb-2 block;
+  }
+}
+
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #bcb9b1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #838079;
+}

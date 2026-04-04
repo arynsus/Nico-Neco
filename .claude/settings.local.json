@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find C:UsersLunettaProjectsNico-Neco.claudeworktreesvigilant-hellman -name *.json -o -name *.md)",
+      "Read(//c/Users/Lunetta/Projects/Nico-Neco/design_ref/**)",
+      "Read(//c/Users/Lunetta/Projects/Nico-Neco/**)",
+      "WebFetch(domain:en.clash.wiki)",
+      "WebFetch(domain:la-gia.mirhardt.com)",
+      "Bash(npm install:*)",
+      "Bash(where node:*)",
+      "Bash(where npm:*)",
+      "Bash(where pnpm:*)",
+      "Read(//c/Program Files/nodejs/**)",
+      "Read(//c/Users/Lunetta/AppData/Roaming/npm/**)",
+      "Read(//c/Program Files/**)",
+      "Read(//c/Users/Lunetta/AppData/Local/**)",
+      "Read(//c/Users/Lunetta/**)",
+      "Read(//c/Users/Lunetta/scoop/apps/**)",
+      "Bash(PATH=\"$PATH:/c/Program Files/nodejs:/c/Users/Lunetta/AppData/Roaming/npm\" node --version)",
+      "Bash(cmd.exe /c \"node --version\")",
+      "Bash(powershell.exe -Command \"node --version\")",
+      "Bash(cmd.exe /c \"where node\")",
+      "Bash(cmd.exe /c \"where node 2>nul && where npm 2>nul && where pnpm 2>nul && node --version && npm --version\")",
+      "Bash(for p:*)",
+      "Bash(do test:*)",
+      "Bash(echo \"FOUND NODE: $p\")",
+      "Bash(test -f \"$p/npm\")",
+      "Bash(echo \"FOUND NPM: $p\")"
+    ]
+  }
+}

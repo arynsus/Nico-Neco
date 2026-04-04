@@ -137,3 +137,10 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Firebase service account (sensitive)
+**/firebase-service-account.json
+*firebase-adminsdk*.json
+
+# Backend build output
+backend/dist/
