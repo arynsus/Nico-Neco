@@ -7,6 +7,7 @@ import Sources from './pages/Sources';
 import Users from './pages/Users';
 import Tiers from './pages/Tiers';
 import Rules from './pages/Rules';
+import Settings from './pages/Settings';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -48,6 +49,7 @@ export default function App() {
           <Route path="/users" element={<Users />} />
           <Route path="/tiers" element={<Tiers />} />
           <Route path="/rules" element={<Rules />} />
+          <Route path="/settings" element={<Settings />} />
         </Route>
       </Routes>
     </BrowserRouter>

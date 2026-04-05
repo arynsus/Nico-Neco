@@ -15,6 +15,7 @@ export interface Source {
   isActive: boolean;
   lastFetched: string | null;
   proxyCount: number;
+  cachedProxies: ProxyNode[];
   tags: string[];
   createdAt: string;
 }
@@ -23,16 +24,38 @@ export interface ServiceCategory {
   id: string;
   name: string;
   icon: string;
-  groupType: 'select' | 'url-test' | 'fallback' | 'load-balance';
   description: string;
-  rules: RuleEntry[];
+  ruleProviders: RuleProvider[];
+  extraRules: RuleEntry[];
   order: number;
-  isBuiltIn: boolean;
   createdAt: string;
 }
 
+export interface RuleProvider {
+  id: string;
+  name: string;
+  url: string;
+}
+
+export type RuleType =
+  | 'DOMAIN'
+  | 'DOMAIN-SUFFIX'
+  | 'DOMAIN-KEYWORD'
+  | 'GEOIP'
+  | 'IP-CIDR'
+  | 'IP-CIDR6'
+  | 'SRC-IP-CIDR'
+  | 'SRC-PORT'
+  | 'DST-PORT'
+  | 'PROCESS-NAME'
+  | 'PROCESS-PATH'
+  | 'IPSET'
+  | 'RULE-SET'
+  | 'SCRIPT'
+  | 'MATCH';
+
 export interface RuleEntry {
-  type: 'DOMAIN' | 'DOMAIN-SUFFIX' | 'DOMAIN-KEYWORD' | 'GEOIP' | 'IP-CIDR' | 'IP-CIDR6' | 'DST-PORT' | 'PROCESS-NAME';
+  type: RuleType;
   value: string;
 }
 
@@ -78,6 +101,13 @@ export interface ProxyGroup {
   url?: string;
   interval?: number;
   tolerance?: number;
+}
+
+export interface Admin {
+  id: string;
+  username: string;
+  passwordHash: string;
+  createdAt: string;
 }
 
 export interface AppSettings {

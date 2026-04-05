@@ -1,16 +1,15 @@
 import { useState, useEffect } from 'react';
-import { firebaseAuth, onAuthStateChanged, type User } from '../firebase';
+import { getAdmin, verifySession, type AdminUser } from '../auth';
 
 export function useAuth() {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<AdminUser | null>(getAdmin());
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(firebaseAuth, (u) => {
-      setUser(u);
+    verifySession().then((admin) => {
+      setUser(admin);
       setLoading(false);
     });
-    return unsubscribe;
   }, []);
 
   return { user, loading };

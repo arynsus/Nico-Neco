@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { sourcesApi, usersApi, tiersApi, rulesApi } from '../api/client';
 
 function Icon({ name, filled }: { name: string; filled?: boolean }) {
@@ -147,7 +148,7 @@ export default function Dashboard() {
       <div className="mb-12">
         <h3 className="text-lg font-bold text-on-surface mb-4">Quick Actions</h3>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <a href="/sources" className="card card-hover flex items-center gap-4 cursor-pointer">
+          <Link to="/sources" className="card card-hover flex items-center gap-4 cursor-pointer">
             <div className="w-12 h-12 rounded-xl bg-primary-container flex items-center justify-center">
               <Icon name="add_circle" />
             </div>
@@ -155,8 +156,8 @@ export default function Dashboard() {
               <div className="font-semibold text-on-surface">Add Source</div>
               <div className="text-xs text-on-surface-variant">Connect a subscription or Marzban instance</div>
             </div>
-          </a>
-          <a href="/users" className="card card-hover flex items-center gap-4 cursor-pointer">
+          </Link>
+          <Link to="/users" className="card card-hover flex items-center gap-4 cursor-pointer">
             <div className="w-12 h-12 rounded-xl bg-secondary-container flex items-center justify-center">
               <Icon name="person_add" />
             </div>
@@ -164,8 +165,8 @@ export default function Dashboard() {
               <div className="font-semibold text-on-surface">Add User</div>
               <div className="text-xs text-on-surface-variant">Create a new subscription user</div>
             </div>
-          </a>
-          <a href="/rules" className="card card-hover flex items-center gap-4 cursor-pointer">
+          </Link>
+          <Link to="/rules" className="card card-hover flex items-center gap-4 cursor-pointer">
             <div className="w-12 h-12 rounded-xl bg-tertiary-container flex items-center justify-center">
               <Icon name="tune" />
             </div>
@@ -173,7 +174,7 @@ export default function Dashboard() {
               <div className="font-semibold text-on-surface">Edit Rules</div>
               <div className="text-xs text-on-surface-variant">Manage routing categories and rules</div>
             </div>
-          </a>
+          </Link>
         </div>
       </div>
     </div>

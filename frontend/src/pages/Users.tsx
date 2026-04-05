@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { usersApi, tiersApi } from '../api/client';
+import { usersApi, tiersApi, configsApi } from '../api/client';
 
 interface UserRecord {
   id: string;
@@ -7,7 +7,6 @@ interface UserRecord {
   email: string;
   tierId: string;
   subscriptionToken: string;
-  isActive: boolean;
   note: string;
 }
 
@@ -37,6 +36,8 @@ export default function Users() {
   const [editing, setEditing] = useState<UserRecord | null>(null);
   const [search, setSearch] = useState('');
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
+  const [qrUser, setQrUser] = useState<UserRecord | null>(null);
+  const [rebuilding, setRebuilding] = useState(false);
 
   const [form, setForm] = useState({ name: '', email: '', tierId: '', note: '' });
 
@@ -105,10 +106,23 @@ export default function Users() {
     }
   }
 
-  async function handleToggle(user: UserRecord) {
+  async function handleRebuildAll() {
+    if (!confirm('Rebuild cached config YAML for all users? This may take a moment.')) return;
+    setRebuilding(true);
     try {
-      await usersApi.update(user.id, { isActive: !user.isActive });
-      load();
+      const result = await configsApi.rebuildAll();
+      alert(`Rebuilt ${result.success}/${result.total} configs. ${result.failed > 0 ? `${result.failed} failed.` : ''}`);
+    } catch (err: any) {
+      alert(`Rebuild failed: ${err.message}`);
+    } finally {
+      setRebuilding(false);
+    }
+  }
+
+  async function handleRebuildOne(id: string, name: string) {
+    try {
+      const res = await configsApi.rebuildOne(id);
+      alert(`Rebuilt ${name}: ${res.filename} (${res.size} bytes)`);
     } catch (err: any) {
       alert(err.message);
     }
@@ -151,10 +165,16 @@ export default function Users() {
             Manage subscription users and their access tiers.
           </p>
         </div>
-        <button onClick={openCreate} className="btn-primary w-fit">
-          <Icon name="person_add" />
-          <span>Add User</span>
-        </button>
+        <div className="flex gap-3">
+          <button onClick={handleRebuildAll} className="btn-secondary" disabled={rebuilding}>
+            <Icon name={rebuilding ? 'hourglass_empty' : 'cached'} />
+            <span>{rebuilding ? 'Rebuilding…' : 'Rebuild Configs'}</span>
+          </button>
+          <button onClick={openCreate} className="btn-primary">
+            <Icon name="person_add" />
+            <span>Add User</span>
+          </button>
+        </div>
       </div>
 
       {/* Search / filter toolbar */}
@@ -195,11 +215,8 @@ export default function Users() {
               className="card card-hover flex flex-col lg:flex-row lg:items-center gap-6"
             >
               <div className="flex items-center gap-5 flex-1">
-                <div className="w-14 h-14 rounded-xl bg-primary-container flex items-center justify-center text-primary font-bold text-xl shrink-0 relative">
+                <div className="w-14 h-14 rounded-xl bg-primary-container flex items-center justify-center text-primary font-bold text-xl shrink-0">
                   {user.name[0]?.toUpperCase()}
-                  <div className={`absolute bottom-1 right-1 w-3 h-3 rounded-full border-2 border-surface-container ${
-                    user.isActive ? 'bg-tertiary' : 'bg-outline-variant'
-                  }`} />
                 </div>
                 <div className="min-w-0">
                   <h4 className="text-lg font-bold text-on-surface tracking-tight">{user.name}</h4>
@@ -207,7 +224,7 @@ export default function Users() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 lg:grid-cols-3 gap-8 lg:gap-12 flex-[2]">
+              <div className="grid grid-cols-2 gap-8 lg:gap-12 flex-[2]">
                 <div>
                   <p className="label-text">Tier</p>
                   <div className={colorMap[tier?.color || 'outline'] || 'chip-outline'}>
@@ -225,27 +242,21 @@ export default function Users() {
                     {copiedToken === user.subscriptionToken ? 'Copied!' : 'Copy URL'}
                   </button>
                 </div>
-                <div className="hidden lg:block">
-                  <p className="label-text">Status</p>
-                  <div className={`flex items-center gap-2 text-sm font-semibold ${
-                    user.isActive ? 'text-tertiary' : 'text-error'
-                  }`}>
-                    <span className={`status-dot ${user.isActive ? 'bg-tertiary' : 'bg-error'}`} />
-                    {user.isActive ? 'Active' : 'Paused'}
-                  </div>
-                </div>
               </div>
 
               <div className="flex items-center gap-2">
+                <button onClick={() => setQrUser(user)} className="btn-ghost" title="Show QR code">
+                  <Icon name="qr_code_2" />
+                </button>
+                <button onClick={() => handleRebuildOne(user.id, user.name)} className="btn-ghost" title="Rebuild cached config">
+                  <Icon name="cached" />
+                </button>
                 <button onClick={() => openEdit(user)} className="btn-ghost" title="Edit">
                   <Icon name="edit" />
                 </button>
-                <button onClick={() => handleToggle(user)} className="btn-ghost" title={user.isActive ? 'Pause' : 'Activate'}>
-                  <Icon name={user.isActive ? 'pause_circle' : 'play_circle'} />
-                </button>
-                <button onClick={() => handleRegenToken(user.id)} className="btn-ghost" title="Regenerate token">
+                {/* <button onClick={() => handleRegenToken(user.id)} className="btn-ghost" title="Regenerate token">
                   <Icon name="refresh" />
-                </button>
+                </button> */}
                 <button onClick={() => handleDelete(user.id)} className="btn-ghost hover:!text-error" title="Delete">
                   <Icon name="delete" />
                 </button>
@@ -254,6 +265,41 @@ export default function Users() {
           );
         })}
       </div>
+
+      {/* QR code modal */}
+      {qrUser && (
+        <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 flex items-center justify-center p-6" onClick={() => setQrUser(null)}>
+          <div className="bg-surface rounded-xl shadow-ambient-lg w-full max-w-md p-8" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h3 className="text-xl font-bold text-on-surface">Subscription QR</h3>
+                <p className="text-sm text-on-surface-variant mt-1">{qrUser.name}</p>
+              </div>
+              <button onClick={() => setQrUser(null)} className="btn-ghost">
+                <Icon name="close" />
+              </button>
+            </div>
+            <div className="bg-white rounded-[1rem] p-6 flex items-center justify-center">
+              <img
+                src={`https://api.qrserver.com/v1/create-qr-code/?size=320x320&margin=0&data=${encodeURIComponent(getSubUrl(qrUser.subscriptionToken))}`}
+                alt="Subscription QR code"
+                className="w-80 h-80"
+              />
+            </div>
+            <div className="mt-4 p-3 bg-surface-container rounded-lg">
+              <p className="text-[10px] uppercase tracking-wider text-on-surface-variant font-semibold mb-1">Subscription URL</p>
+              <p className="text-xs font-mono text-on-surface break-all">{getSubUrl(qrUser.subscriptionToken)}</p>
+            </div>
+            <button
+              onClick={() => copySubUrl(qrUser.subscriptionToken)}
+              className="btn-secondary w-full mt-4"
+            >
+              <Icon name={copiedToken === qrUser.subscriptionToken ? 'check' : 'content_copy'} />
+              {copiedToken === qrUser.subscriptionToken ? 'Copied!' : 'Copy URL'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Modal form */}
       {showForm && (

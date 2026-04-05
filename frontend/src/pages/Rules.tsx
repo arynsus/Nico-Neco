@@ -6,15 +6,29 @@ interface RuleEntry {
   value: string;
 }
 
+interface ProviderStatus {
+  exists: boolean;
+  lastFetched: string | null;
+  ruleCount: number;
+  skipped: number;
+  fileSize: number | null;
+}
+
+interface RuleProvider {
+  id: string;
+  name: string;
+  url: string;
+  status?: ProviderStatus;
+}
+
 interface ServiceCategory {
   id: string;
   name: string;
   icon: string;
-  groupType: 'select' | 'url-test' | 'fallback' | 'load-balance';
   description: string;
-  rules: RuleEntry[];
+  ruleProviders: RuleProvider[];
+  extraRules: RuleEntry[];
   order: number;
-  isBuiltIn: boolean;
 }
 
 function Icon({ name }: { name: string }) {
@@ -23,15 +37,26 @@ function Icon({ name }: { name: string }) {
 
 const ruleTypes = [
   'DOMAIN', 'DOMAIN-SUFFIX', 'DOMAIN-KEYWORD', 'GEOIP',
-  'IP-CIDR', 'IP-CIDR6', 'DST-PORT', 'PROCESS-NAME',
+  'IP-CIDR', 'IP-CIDR6', 'SRC-IP-CIDR', 'SRC-PORT', 'DST-PORT',
+  'PROCESS-NAME', 'PROCESS-PATH', 'IPSET', 'RULE-SET', 'SCRIPT', 'MATCH',
 ];
 
-const groupTypes = [
-  { value: 'select', label: 'Select (manual)', desc: 'User picks which proxy to use' },
-  { value: 'url-test', label: 'URL Test (auto)', desc: 'Auto-picks fastest proxy' },
-  { value: 'fallback', label: 'Fallback (auto)', desc: 'Uses first available proxy' },
-  { value: 'load-balance', label: 'Load Balance', desc: 'Distributes across proxies' },
-];
+function formatBytes(n: number | null): string {
+  if (n === null || n === undefined) return '—';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(2)} MB`;
+}
+
+function formatRelative(iso: string | null): string {
+  if (!iso) return 'Never';
+  const then = new Date(iso).getTime();
+  const diff = Date.now() - then;
+  if (diff < 60_000) return 'just now';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return `${Math.floor(diff / 86_400_000)}d ago`;
+}
 
 export default function Rules() {
   const [categories, setCategories] = useState<ServiceCategory[]>([]);
@@ -42,12 +67,13 @@ export default function Rules() {
   const [preview, setPreview] = useState('');
   const [previewLoading, setPreviewLoading] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [fetchingProvider, setFetchingProvider] = useState<string | null>(null);
 
   const [form, setForm] = useState({
-    name: '', icon: 'category', groupType: 'select' as ServiceCategory['groupType'],
-    description: '', rules: [] as RuleEntry[], order: 99,
+    name: '', icon: 'category', description: '', extraRules: [] as RuleEntry[], order: 99,
   });
   const [newRule, setNewRule] = useState({ type: 'DOMAIN-SUFFIX', value: '' });
+  const [newProvider, setNewProvider] = useState({ name: '', url: '' });
 
   useEffect(() => { load(); }, []);
 
@@ -64,7 +90,7 @@ export default function Rules() {
 
   function openCreate() {
     setEditing(null);
-    setForm({ name: '', icon: 'category', groupType: 'select', description: '', rules: [], order: categories.length + 1 });
+    setForm({ name: '', icon: 'category', description: '', extraRules: [], order: categories.length + 1 });
     setNewRule({ type: 'DOMAIN-SUFFIX', value: '' });
     setShowForm(true);
   }
@@ -72,37 +98,27 @@ export default function Rules() {
   function openEdit(cat: ServiceCategory) {
     setEditing(cat);
     setForm({
-      name: cat.name, icon: cat.icon, groupType: cat.groupType,
-      description: cat.description, rules: [...cat.rules], order: cat.order,
+      name: cat.name, icon: cat.icon, description: cat.description,
+      extraRules: [...(cat.extraRules || [])], order: cat.order,
     });
     setNewRule({ type: 'DOMAIN-SUFFIX', value: '' });
     setShowForm(true);
   }
 
-  function addRule() {
+  function addExtraRule() {
     if (!newRule.value.trim()) return;
     setForm((prev) => ({
       ...prev,
-      rules: [...prev.rules, { type: newRule.type, value: newRule.value.trim() }],
+      extraRules: [...prev.extraRules, { type: newRule.type, value: newRule.value.trim() }],
     }));
     setNewRule({ ...newRule, value: '' });
   }
 
-  function removeRule(index: number) {
+  function removeExtraRule(index: number) {
     setForm((prev) => ({
       ...prev,
-      rules: prev.rules.filter((_, i) => i !== index),
+      extraRules: prev.extraRules.filter((_, i) => i !== index),
     }));
-  }
-
-  function addBulkRules() {
-    const text = prompt('Paste domain suffixes (one per line):');
-    if (!text) return;
-    const newRules = text.split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((value) => ({ type: newRule.type, value }));
-    setForm((prev) => ({ ...prev, rules: [...prev.rules, ...newRules] }));
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -121,9 +137,45 @@ export default function Rules() {
   }
 
   async function handleDelete(id: string) {
-    if (!confirm('Delete this routing category?')) return;
+    if (!confirm('Delete this routing category? Its cached provider files will also be removed.')) return;
     try {
       await rulesApi.delete(id);
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  }
+
+  async function handleAddProvider(categoryId: string) {
+    if (!newProvider.url.trim()) return;
+    try {
+      await rulesApi.addProvider(categoryId, {
+        name: newProvider.name.trim() || undefined,
+        url: newProvider.url.trim(),
+      });
+      setNewProvider({ name: '', url: '' });
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  }
+
+  async function handleFetchProvider(categoryId: string, providerId: string) {
+    setFetchingProvider(providerId);
+    try {
+      await rulesApi.fetchProvider(categoryId, providerId);
+      load();
+    } catch (err: any) {
+      alert(`Fetch failed: ${err.message}`);
+    } finally {
+      setFetchingProvider(null);
+    }
+  }
+
+  async function handleRemoveProvider(categoryId: string, providerId: string) {
+    if (!confirm('Remove this provider and delete its cached file?')) return;
+    try {
+      await rulesApi.removeProvider(categoryId, providerId);
       load();
     } catch (err: any) {
       alert(err.message);
@@ -161,7 +213,7 @@ export default function Rules() {
             Traffic <span className="text-primary italic">Routes</span>
           </h2>
           <p className="text-on-surface-variant mt-3 max-w-md">
-            Define service categories and their routing rules. Each category becomes a proxy-group selector in the Clash config.
+            Define service categories and attach external rule-provider URLs. Rules are cached locally — Firestore only stores the URL references.
           </p>
         </div>
         <div className="flex gap-3">
@@ -182,10 +234,9 @@ export default function Rules() {
           <Icon name="info" />
         </div>
         <div className="text-sm text-on-surface-variant">
-          <strong className="text-on-surface">How routing works:</strong> Rules are evaluated top-to-bottom.
-          Each category generates a <code className="bg-surface-container-highest px-1.5 py-0.5 rounded text-xs">proxy-group</code> of
-          type "select" by default, so users can choose which proxy to use for that category.
-          Traffic not matching any category falls through to the <strong>Fallback</strong> group (DIRECT by default).
+          <strong className="text-on-surface">How it works:</strong> Each category can hold any number of external rule-provider URLs
+          (e.g. <code className="bg-surface-container-highest px-1.5 py-0.5 rounded text-xs">blackmatrix7/ios_rule_script</code> YAML files)
+          plus extra custom entries. Providers are fetched with a click and cached as files under <code className="bg-surface-container-highest px-1.5 py-0.5 rounded text-xs">backend/data/rule-providers/</code>.
         </div>
       </div>
 
@@ -204,59 +255,162 @@ export default function Rules() {
         </div>
 
         {/* Service categories */}
-        {categories.map((cat) => (
-          <div key={cat.id} className="card card-hover">
-            <div
-              className="flex items-center gap-4 cursor-pointer"
-              onClick={() => setExpandedId(expandedId === cat.id ? null : cat.id)}
-            >
-              <div className="w-10 h-10 rounded-xl bg-primary-container flex items-center justify-center text-primary">
-                <Icon name={cat.icon} />
-              </div>
-              <div className="flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold">{cat.name}</span>
-                  {cat.isBuiltIn && (
-                    <span className="text-[9px] uppercase tracking-widest text-on-surface-variant bg-surface-container-highest px-2 py-0.5 rounded-full">
-                      Built-in
-                    </span>
-                  )}
+        {categories.map((cat) => {
+          const providers = cat.ruleProviders || [];
+          const extraRules = cat.extraRules || [];
+          const totalCached = providers.reduce((sum, p) => sum + (p.status?.ruleCount || 0), 0);
+          const totalRules = totalCached + extraRules.length;
+          const isExpanded = expandedId === cat.id;
+
+          return (
+            <div key={cat.id} className="card card-hover">
+              <div
+                className="flex items-center gap-4 cursor-pointer"
+                onClick={() => setExpandedId(isExpanded ? null : cat.id)}
+              >
+                <div className="w-10 h-10 rounded-xl bg-primary-container flex items-center justify-center text-primary">
+                  <Icon name={cat.icon} />
                 </div>
-                <span className="text-xs text-on-surface-variant">{cat.description}</span>
-              </div>
-              <span className="chip-outline text-[10px]">
-                {cat.rules.length} rules
-              </span>
-              <span className="chip-secondary text-[10px]">
-                {groupTypes.find((g) => g.value === cat.groupType)?.label || cat.groupType}
-              </span>
-              <div className="flex gap-1">
-                <button onClick={(e) => { e.stopPropagation(); openEdit(cat); }} className="btn-ghost" title="Edit">
-                  <Icon name="edit" />
-                </button>
-                {!cat.isBuiltIn && (
-                  <button onClick={(e) => { e.stopPropagation(); handleDelete(cat.id); }} className="btn-ghost hover:!text-error" title="Delete">
+                <div className="flex-1 min-w-0">
+                  <span className="font-semibold">{cat.name}</span>
+                  <div className="text-xs text-on-surface-variant truncate">{cat.description}</div>
+                </div>
+                <span className="chip-outline text-[10px]">
+                  {providers.length} provider{providers.length !== 1 ? 's' : ''}
+                </span>
+                <span className="chip-secondary text-[10px]">
+                  {totalRules.toLocaleString()} rules
+                </span>
+                <div className="flex gap-1">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); openEdit(cat); }}
+                    className="btn-ghost"
+                    title="Edit"
+                  >
+                    <Icon name="edit" />
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleDelete(cat.id); }}
+                    className="btn-ghost hover:!text-error"
+                    title="Delete"
+                  >
                     <Icon name="delete" />
                   </button>
-                )}
-              </div>
-            </div>
-
-            {/* Expanded rules list */}
-            {expandedId === cat.id && (
-              <div className="mt-4 pt-4 border-t border-outline-variant/10">
-                <div className="flex flex-wrap gap-2">
-                  {cat.rules.map((rule, i) => (
-                    <span key={i} className="inline-flex items-center gap-1 px-2 py-1 bg-surface-container-highest rounded-lg text-xs font-mono">
-                      <span className="text-primary font-bold">{rule.type}</span>
-                      <span className="text-on-surface-variant">{rule.value}</span>
-                    </span>
-                  ))}
                 </div>
               </div>
-            )}
-          </div>
-        ))}
+
+              {/* Expanded: providers + extras */}
+              {isExpanded && (
+                <div className="mt-4 pt-4 border-t border-outline-variant/10 space-y-4">
+                  {/* Providers list */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-sm font-semibold text-on-surface">Rule Providers</h4>
+                    </div>
+                    {providers.length === 0 && (
+                      <p className="text-xs text-on-surface-variant italic py-2">
+                        No providers yet. Add a URL below (e.g. a blackmatrix7 YAML file).
+                      </p>
+                    )}
+                    <div className="space-y-2">
+                      {providers.map((p) => (
+                        <div
+                          key={p.id}
+                          className="flex items-center gap-3 px-3 py-2 bg-surface-container rounded-lg"
+                        >
+                          <div className="w-8 h-8 rounded-lg bg-surface-container-highest flex items-center justify-center shrink-0">
+                            <Icon name="cloud_download" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-semibold truncate">{p.name}</div>
+                            <div className="text-[10px] font-mono text-on-surface-variant truncate">{p.url}</div>
+                          </div>
+                          <div className="text-right text-[10px] text-on-surface-variant shrink-0 mr-2">
+                            <div className="font-semibold text-on-surface">
+                              {p.status?.exists ? `${p.status.ruleCount.toLocaleString()} rules` : 'Not fetched'}
+                              {p.status?.exists && p.status.skipped > 0 && (
+                                <span
+                                  className="ml-1 text-error"
+                                  title={`${p.status.skipped} lines dropped — unsupported rule type`}
+                                >
+                                  (−{p.status.skipped})
+                                </span>
+                              )}
+                            </div>
+                            <div>
+                              {formatRelative(p.status?.lastFetched || null)} · {formatBytes(p.status?.fileSize ?? null)}
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => handleFetchProvider(cat.id, p.id)}
+                            className="btn-ghost"
+                            disabled={fetchingProvider === p.id}
+                            title="Fetch / refresh"
+                          >
+                            <Icon name={fetchingProvider === p.id ? 'hourglass_empty' : 'refresh'} />
+                          </button>
+                          <button
+                            onClick={() => handleRemoveProvider(cat.id, p.id)}
+                            className="btn-ghost hover:!text-error"
+                            title="Remove"
+                          >
+                            <Icon name="close" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Add provider inline form */}
+                    <div className="flex gap-2 mt-3">
+                      <input
+                        className="input-field !w-auto md:w-40"
+                        placeholder="Name (optional)"
+                        value={newProvider.name}
+                        onChange={(e) => setNewProvider({ ...newProvider, name: e.target.value })}
+                      />
+                      <input
+                        className="input-field flex-1"
+                        placeholder="https://raw.githubusercontent.com/.../YouTube.yaml"
+                        value={newProvider.url}
+                        onChange={(e) => setNewProvider({ ...newProvider, url: e.target.value })}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddProvider(cat.id); } }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleAddProvider(cat.id)}
+                        className="btn-primary !px-4"
+                        title="Add provider"
+                      >
+                        <Icon name="add" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Extra rules */}
+                  <div>
+                    <h4 className="text-sm font-semibold text-on-surface mb-2">
+                      Extra Rules ({extraRules.length})
+                    </h4>
+                    {extraRules.length === 0 ? (
+                      <p className="text-xs text-on-surface-variant italic">
+                        No custom entries. Use the Edit button above to add individual rules.
+                      </p>
+                    ) : (
+                      <div className="flex flex-wrap gap-2">
+                        {extraRules.map((rule, i) => (
+                          <span key={i} className="inline-flex items-center gap-1 px-2 py-1 bg-surface-container-highest rounded-lg text-xs font-mono">
+                            <span className="text-primary font-bold">{rule.type}</span>
+                            <span className="text-on-surface-variant">{rule.value}</span>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
 
         {/* Fixed: GeoIP CN */}
         <div className="card bg-surface-container-low flex items-center gap-4 opacity-60">
@@ -283,7 +437,7 @@ export default function Rules() {
         </div>
       </div>
 
-      {/* Edit/Create form modal */}
+      {/* Edit/Create form modal (category metadata + extra rules only) */}
       {showForm && (
         <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 flex items-center justify-center p-6">
           <div className="bg-surface rounded-xl shadow-ambient-lg w-full max-w-2xl p-8 max-h-[90vh] overflow-y-auto">
@@ -323,41 +477,24 @@ export default function Rules() {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="label-text">Group Type</label>
-                  <select
-                    className="input-field"
-                    value={form.groupType}
-                    onChange={(e) => setForm({ ...form, groupType: e.target.value as any })}
-                  >
-                    {groupTypes.map((gt) => (
-                      <option key={gt.value} value={gt.value}>{gt.label} - {gt.desc}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="label-text">Priority Order</label>
-                  <input
-                    className="input-field"
-                    type="number"
-                    min={1}
-                    value={form.order}
-                    onChange={(e) => setForm({ ...form, order: parseInt(e.target.value) || 99 })}
-                  />
-                </div>
+              <div>
+                <label className="label-text">Priority Order</label>
+                <input
+                  className="input-field"
+                  type="number"
+                  min={1}
+                  value={form.order}
+                  onChange={(e) => setForm({ ...form, order: parseInt(e.target.value) || 99 })}
+                />
               </div>
 
-              {/* Rules editor */}
+              {/* Extra rules editor (custom one-off rules only) */}
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="label-text !mb-0">Rules ({form.rules.length})</label>
-                  <button type="button" onClick={addBulkRules} className="text-xs text-primary font-semibold hover:underline">
-                    Bulk add...
-                  </button>
-                </div>
+                <label className="label-text">Extra Rules ({form.extraRules.length})</label>
+                <p className="text-xs text-on-surface-variant mb-2">
+                  Individual custom entries. For bulk rules, add a provider URL after saving.
+                </p>
 
-                {/* Add new rule */}
                 <div className="flex gap-2 mb-3">
                   <select
                     className="input-field !w-auto"
@@ -373,16 +510,15 @@ export default function Rules() {
                     value={newRule.value}
                     onChange={(e) => setNewRule({ ...newRule, value: e.target.value })}
                     placeholder="e.g., netflix.com"
-                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addRule(); } }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addExtraRule(); } }}
                   />
-                  <button type="button" onClick={addRule} className="btn-primary !px-4">
+                  <button type="button" onClick={addExtraRule} className="btn-primary !px-4">
                     <Icon name="add" />
                   </button>
                 </div>
 
-                {/* Rules list */}
                 <div className="max-h-64 overflow-y-auto space-y-1">
-                  {form.rules.map((rule, i) => (
+                  {form.extraRules.map((rule, i) => (
                     <div
                       key={i}
                       className="flex items-center gap-2 px-3 py-2 bg-surface-container rounded-lg text-sm group"
@@ -391,16 +527,16 @@ export default function Rules() {
                       <span className="flex-1 font-mono text-xs text-on-surface">{rule.value}</span>
                       <button
                         type="button"
-                        onClick={() => removeRule(i)}
+                        onClick={() => removeExtraRule(i)}
                         className="opacity-0 group-hover:opacity-100 text-error transition-opacity"
                       >
                         <span className="material-symbols-outlined text-sm">close</span>
                       </button>
                     </div>
                   ))}
-                  {form.rules.length === 0 && (
+                  {form.extraRules.length === 0 && (
                     <p className="text-on-surface-variant text-xs text-center py-4 italic">
-                      No rules added yet. Add domains or IPs above.
+                      No extra rules yet.
                     </p>
                   )}
                 </div>

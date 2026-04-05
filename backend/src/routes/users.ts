@@ -1,8 +1,63 @@
 import { Router } from 'express';
 import { db } from '../config/firebase';
 import { requireAuth } from '../middleware/auth';
-import { User } from '../types';
+import { User, Source } from '../types';
 import { v4 as uuidv4 } from 'uuid';
+import { MarzbanClient } from '../services/marzbanClient';
+
+/**
+ * Helper: find all active Marzban sources that the user's tier allows,
+ * then create the user on each of them.
+ */
+async function syncUserToMarzbanSources(userName: string, uuid: string, tierId: string) {
+  const tierDoc = await db.collection('tiers').doc(tierId).get();
+  if (!tierDoc.exists) return;
+  const tier = tierDoc.data()!;
+  const allowedSourceIds: string[] = tier.allowedSourceIds || [];
+
+  for (const sourceId of allowedSourceIds) {
+    const sourceDoc = await db.collection('sources').doc(sourceId).get();
+    if (!sourceDoc.exists) continue;
+    const source = sourceDoc.data() as Source;
+    if (source.type !== 'marzban' || !source.credentials || !source.isActive) continue;
+
+    try {
+      const client = new MarzbanClient(source.url, source.credentials.username, source.credentials.password);
+      const existing = await client.getUser(userName);
+      if (existing) {
+        await client.modifyUser(userName, uuid);
+      } else {
+        await client.createUser(userName, uuid);
+      }
+    } catch (err: any) {
+      console.error(`Failed to sync user ${userName} to Marzban ${source.name}: ${err.message}`);
+    }
+  }
+}
+
+/**
+ * Helper: delete a user from all Marzban sources accessible via their tier.
+ */
+async function removeUserFromMarzbanSources(userName: string, tierId: string) {
+  const tierDoc = await db.collection('tiers').doc(tierId).get();
+  if (!tierDoc.exists) return;
+  const tier = tierDoc.data()!;
+  const allowedSourceIds: string[] = tier.allowedSourceIds || [];
+
+  for (const sourceId of allowedSourceIds) {
+    const sourceDoc = await db.collection('sources').doc(sourceId).get();
+    if (!sourceDoc.exists) continue;
+    const source = sourceDoc.data() as Source;
+    if (source.type !== 'marzban' || !source.credentials || !source.isActive) continue;
+
+    try {
+      const client = new MarzbanClient(source.url, source.credentials.username, source.credentials.password);
+      await client.deleteUser(userName);
+    } catch (err: any) {
+      console.error(`Failed to remove user ${userName} from Marzban ${source.name}: ${err.message}`);
+    }
+  }
+}
 
 const router = Router();
 
@@ -69,6 +124,10 @@ router.post('/', requireAuth, async (req, res) => {
     };
 
     const ref = await db.collection('users').add(user);
+
+    // Auto-sync to Marzban sources
+    await syncUserToMarzbanSources(name, user.subscriptionToken, tierId);
+
     res.status(201).json({ id: ref.id, ...user });
   } catch (err) {
     res.status(500).json({ error: 'Failed to create user' });
@@ -110,6 +169,11 @@ router.delete('/:id', requireAuth, async (req, res) => {
   try {
     const doc = await db.collection('users').doc(req.params.id).get();
     if (!doc.exists) return res.status(404).json({ error: 'User not found' });
+
+    const userData = doc.data()!;
+    // Remove from Marzban sources
+    await removeUserFromMarzbanSources(userData.name, userData.tierId);
+
     await db.collection('users').doc(req.params.id).delete();
     res.json({ success: true });
   } catch (err) {

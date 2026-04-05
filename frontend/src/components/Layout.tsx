@@ -1,13 +1,14 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { logOut } from '../firebase';
+import { clearSession } from '../auth';
 import { useAuth } from '../hooks/useAuth';
 
 const navItems = [
   { to: '/', icon: 'dashboard', label: 'Dashboard' },
   { to: '/sources', icon: 'cloud_sync', label: 'Sources' },
   { to: '/users', icon: 'group', label: 'Users' },
-  { to: '/tiers', icon: 'coffee', label: 'Roast Tiers' },
-  { to: '/rules', icon: 'route', label: 'Routing Rules' },
+  { to: '/tiers', icon: 'coffee', label: 'Tiers' },
+  { to: '/rules', icon: 'route', label: 'Routing' },
+  { to: '/settings', icon: 'settings', label: 'Settings' },
 ];
 
 function Icon({ name, filled }: { name: string; filled?: boolean }) {
@@ -25,8 +26,8 @@ export default function Layout() {
   const { user } = useAuth();
   const navigate = useNavigate();
 
-  const handleLogout = async () => {
-    await logOut();
+  const handleLogout = () => {
+    clearSession();
     navigate('/login');
   };
 
@@ -97,17 +98,9 @@ export default function Layout() {
             <button className="btn-ghost">
               <Icon name="settings" />
             </button>
-            {user?.photoURL ? (
-              <img
-                src={user.photoURL}
-                alt="Profile"
-                className="h-10 w-10 rounded-full border-2 border-primary-container shadow-sm object-cover"
-              />
-            ) : (
-              <div className="h-10 w-10 rounded-full border-2 border-primary-container shadow-sm bg-primary-container flex items-center justify-center text-primary font-bold">
-                {user?.email?.[0]?.toUpperCase() || 'A'}
-              </div>
-            )}
+            <div className="h-10 w-10 rounded-full border-2 border-primary-container shadow-sm bg-primary-container flex items-center justify-center text-primary font-bold">
+              {user?.username?.[0]?.toUpperCase() || 'A'}
+            </div>
           </div>
         </header>
 

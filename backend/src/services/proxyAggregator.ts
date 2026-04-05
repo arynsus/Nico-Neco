@@ -1,7 +1,5 @@
 import { db } from '../config/firebase';
 import { Source, ProxyNode, Tier } from '../types';
-import { fetchSubscriptionProxies } from './sourceParser';
-import { MarzbanClient } from './marzbanClient';
 
 interface AggregatedResult {
   proxies: ProxyNode[];
@@ -9,7 +7,8 @@ interface AggregatedResult {
 }
 
 /**
- * Fetches proxies from all active sources and returns them grouped by source.
+ * Gets proxies from all active sources using their cached proxies.
+ * No remote fetching — uses what's stored in Firestore.
  */
 export async function fetchAllProxies(): Promise<AggregatedResult> {
   const snapshot = await db.collection('sources').where('isActive', '==', true).get();
@@ -18,33 +17,17 @@ export async function fetchAllProxies(): Promise<AggregatedResult> {
   const sourceMap = new Map<string, ProxyNode[]>();
   const allProxies: ProxyNode[] = [];
 
-  const results = await Promise.allSettled(
-    sources.map(async (source) => {
-      const proxies = await fetchFromSource(source);
-      return { sourceId: source.id, sourceName: source.name, proxies };
-    }),
-  );
-
-  for (const result of results) {
-    if (result.status === 'fulfilled') {
-      const { sourceId, sourceName, proxies } = result.value;
-      // Tag proxy names with source for uniqueness
-      const taggedProxies = proxies.map((p) => ({
-        ...p,
-        name: `[${sourceName}] ${p.name}`,
-        _sourceId: sourceId,
-      }));
-      sourceMap.set(sourceId, taggedProxies);
-      allProxies.push(...taggedProxies);
-
-      // Update source stats
-      await db.collection('sources').doc(sourceId).update({
-        lastFetched: new Date().toISOString(),
-        proxyCount: proxies.length,
-      });
-    } else {
-      console.error('Failed to fetch from source:', result.reason);
-    }
+  for (const source of sources) {
+    const cached = source.cachedProxies || [];
+    // Tag proxy names with source for uniqueness
+    const taggedProxies = cached.map((p) => ({
+      ...p,
+      name: `[${source.name}] ${p.name}`,
+      _sourceId: source.id,
+      _sourceType: source.type,
+    }));
+    sourceMap.set(source.id, taggedProxies);
+    allProxies.push(...taggedProxies);
   }
 
   return { proxies: allProxies, sourceMap };
@@ -71,22 +54,4 @@ export async function fetchProxiesForTier(tierId: string): Promise<ProxyNode[]> 
   }
 
   return allowedProxies;
-}
-
-async function fetchFromSource(source: Source): Promise<ProxyNode[]> {
-  switch (source.type) {
-    case 'subscription':
-      return fetchSubscriptionProxies(source.url);
-
-    case 'marzban': {
-      if (!source.credentials) {
-        throw new Error(`Marzban source ${source.name} has no credentials`);
-      }
-      const client = new MarzbanClient(source.url, source.credentials.username, source.credentials.password);
-      return client.getProxyNodes();
-    }
-
-    default:
-      throw new Error(`Unknown source type: ${source.type}`);
-  }
 }

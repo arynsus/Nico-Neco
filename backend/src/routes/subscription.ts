@@ -1,19 +1,21 @@
 import { Router } from 'express';
+import fs from 'fs/promises';
 import { db } from '../config/firebase';
-import { generateClashConfig } from '../services/configGenerator';
+import { generateAndCacheUserConfig, generateClashConfig } from '../services/configGenerator';
+import { getUserConfigFile, slugify } from '../services/dataPaths';
 
 const router = Router();
 
 /**
  * Public subscription endpoint.
  * Users add this URL to their Clash client: /sub/{token}
- * No authentication required - the token IS the auth.
+ * Serves the pre-built YAML from disk cache for minimum latency.
+ * If the cache is missing, builds it on-demand and caches it.
  */
 router.get('/:token', async (req, res) => {
   try {
     const { token } = req.params;
 
-    // Find user by subscription token
     const snapshot = await db
       .collection('users')
       .where('subscriptionToken', '==', token)
@@ -27,17 +29,31 @@ router.get('/:token', async (req, res) => {
     const userDoc = snapshot.docs[0];
     const user = userDoc.data();
 
-    if (!user.isActive) {
+    if (user.isActive === false) {
       return res.status(403).send('# Subscription is inactive');
     }
 
-    // Generate the Clash config
-    const yamlConfig = await generateClashConfig(userDoc.id);
+    const slug = slugify(user.name || 'user');
+    const file = getUserConfigFile(slug);
 
-    // Set appropriate headers for Clash client
+    // Try cache first
+    let yamlConfig: string;
+    try {
+      yamlConfig = await fs.readFile(file, 'utf-8');
+    } catch {
+      // Cache miss: build on demand and cache it
+      try {
+        await generateAndCacheUserConfig(userDoc.id);
+        yamlConfig = await fs.readFile(file, 'utf-8');
+      } catch (err: any) {
+        // Last-ditch: generate without caching
+        yamlConfig = await generateClashConfig(userDoc.id);
+      }
+    }
+
     res.setHeader('Content-Type', 'text/yaml; charset=utf-8');
-    res.setHeader('Content-Disposition', `inline; filename="clash-config.yaml"`);
-    res.setHeader('Profile-Update-Interval', '6'); // hours
+    res.setHeader('Content-Disposition', `inline; filename="${slug}.yaml"`);
+    res.setHeader('Profile-Update-Interval', '6');
     res.setHeader(
       'Subscription-Userinfo',
       `upload=0; download=0; total=0; expire=0`,

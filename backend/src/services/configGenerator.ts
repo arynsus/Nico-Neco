@@ -1,10 +1,56 @@
+import fs from 'fs/promises';
 import yaml from 'js-yaml';
 import { db } from '../config/firebase';
-import { ProxyNode, ServiceCategory, ClashConfig, ProxyGroup } from '../types';
+import { ProxyNode, ServiceCategory, ClashConfig, ProxyGroup, RuleEntry } from '../types';
 import { fetchProxiesForTier } from './proxyAggregator';
+import { readProviderRules } from './ruleProviders';
+import { getUserConfigFile, slugify } from './dataPaths';
 
 /**
- * Generates a complete Clash YAML configuration for a given user.
+ * Resolve all rules for a category: merge cached provider rules + inline extraRules.
+ */
+async function resolveCategoryRules(category: ServiceCategory): Promise<RuleEntry[]> {
+  const out: RuleEntry[] = [];
+
+  const providers = category.ruleProviders || [];
+  for (const provider of providers) {
+    const rules = await readProviderRules(category.id, provider.id);
+    out.push(...rules);
+  }
+
+  const extras = category.extraRules || [];
+  out.push(...extras);
+
+  return out;
+}
+
+/**
+ * Load service categories from Firestore, tolerating legacy documents that
+ * stored rules under `rules` and `groupType`/`isBuiltIn` fields.
+ */
+async function loadCategories(): Promise<ServiceCategory[]> {
+  const snap = await db.collection('serviceCategories').orderBy('order').get();
+  return snap.docs.map((doc) => {
+    const raw = doc.data() as Record<string, unknown>;
+    const legacyRules = Array.isArray(raw.rules) ? (raw.rules as RuleEntry[]) : [];
+    const extraRules = Array.isArray(raw.extraRules)
+      ? (raw.extraRules as RuleEntry[])
+      : legacyRules;
+    return {
+      id: doc.id,
+      name: (raw.name as string) || '',
+      icon: (raw.icon as string) || 'category',
+      description: (raw.description as string) || '',
+      ruleProviders: Array.isArray(raw.ruleProviders) ? (raw.ruleProviders as any[]) : [],
+      extraRules,
+      order: typeof raw.order === 'number' ? raw.order : 99,
+      createdAt: (raw.createdAt as string) || '',
+    };
+  });
+}
+
+/**
+ * Generate a complete Clash YAML configuration for a given user.
  */
 export async function generateClashConfig(userId: string): Promise<string> {
   // 1. Get user and tier
@@ -13,20 +59,30 @@ export async function generateClashConfig(userId: string): Promise<string> {
   const user = userDoc.data()!;
 
   // 2. Fetch proxies allowed for this tier
-  const proxies = await fetchProxiesForTier(user.tierId);
-  if (proxies.length === 0) {
+  const rawProxies = await fetchProxiesForTier(user.tierId);
+  if (rawProxies.length === 0) {
     throw new Error('No proxies available for this tier');
   }
 
-  // 3. Get service categories (sorted by order)
-  const categoriesSnap = await db.collection('serviceCategories').orderBy('order').get();
-  const categories = categoriesSnap.docs.map(
-    (doc) => ({ id: doc.id, ...doc.data() }) as ServiceCategory,
-  );
+  // Fill in user UUID for self-hosted (Marzban) proxies
+  const userUuid = user.subscriptionToken;
+  const proxies = rawProxies.map((p) => {
+    const proxy = { ...p };
+    if (proxy.uuid === '__USER_UUID__') proxy.uuid = userUuid;
+    if ((proxy as any).password === '__USER_UUID__') (proxy as any).password = userUuid;
+    return proxy;
+  });
+
+  // 3. Get service categories + resolve their rules from disk
+  const categories = await loadCategories();
+  const resolvedRules = new Map<string, RuleEntry[]>();
+  for (const cat of categories) {
+    resolvedRules.set(cat.id, await resolveCategoryRules(cat));
+  }
 
   // 4. Build the config
   const proxyNames = proxies.map((p) => p.name);
-  const config = buildConfig(proxies, proxyNames, categories);
+  const config = buildConfig(proxies, proxyNames, categories, resolvedRules);
 
   // 5. Serialize to YAML
   return yaml.dump(config, {
@@ -37,23 +93,38 @@ export async function generateClashConfig(userId: string): Promise<string> {
   });
 }
 
+/**
+ * Build config and write it to the on-disk user-configs cache as <slug>.yaml.
+ * Returns the slug used.
+ */
+export async function generateAndCacheUserConfig(userId: string): Promise<string> {
+  const userDoc = await db.collection('users').doc(userId).get();
+  if (!userDoc.exists) throw new Error('User not found');
+  const user = userDoc.data()!;
+  const yamlText = await generateClashConfig(userId);
+
+  const slug = slugify(user.name || 'user');
+  const file = getUserConfigFile(slug);
+  await fs.writeFile(file, yamlText, 'utf-8');
+  return slug;
+}
+
 function buildConfig(
   proxies: ProxyNode[],
   proxyNames: string[],
   categories: ServiceCategory[],
+  resolvedRules: Map<string, RuleEntry[]>,
 ): ClashConfig {
   // Clean proxy objects: remove internal fields
   const cleanProxies = proxies.map((p) => {
     const clean = { ...p };
     delete (clean as Record<string, unknown>)['_sourceId'];
+    delete (clean as Record<string, unknown>)['_sourceType'];
     return clean;
   });
 
-  // Build proxy groups
   const proxyGroups = buildProxyGroups(proxyNames, categories);
-
-  // Build rules from categories
-  const rules = buildRules(categories);
+  const rules = buildRules(categories, resolvedRules);
 
   return {
     port: 7890,
@@ -91,9 +162,9 @@ function buildProxyGroups(
 ): ProxyGroup[] {
   const groups: ProxyGroup[] = [];
 
-  // 1. "Auto Best" - url-test group that picks the fastest proxy
+  // 1. "最低延迟节点" - url-test group that picks the fastest proxy
   groups.push({
-    name: 'Auto Best',
+    name: '最低延迟节点',
     type: 'url-test',
     proxies: [...proxyNames],
     url: 'http://www.gstatic.com/generate_204',
@@ -101,44 +172,36 @@ function buildProxyGroups(
     tolerance: 50,
   });
 
-  // 2. "Global" - master selector for general proxied traffic
+  // 2. "默认节点" - master selector for general proxied traffic
   groups.push({
-    name: 'Global',
+    name: '默认节点',
     type: 'select',
-    proxies: ['Auto Best', ...proxyNames, 'DIRECT'],
+    proxies: ['最低延迟节点', ...proxyNames, 'DIRECT'],
   });
 
-  // 3. Service category groups - each one is a selector
+  // 3. One select group per service category
   for (const category of categories) {
     groups.push({
       name: category.name,
-      type: category.groupType,
-      proxies:
-        category.groupType === 'select'
-          ? ['Global', 'Auto Best', ...proxyNames, 'DIRECT']
-          : [...proxyNames],
-      ...(category.groupType === 'url-test' && {
-        url: 'http://www.gstatic.com/generate_204',
-        interval: 300,
-      }),
-      ...(category.groupType === 'fallback' && {
-        url: 'http://www.gstatic.com/generate_204',
-        interval: 300,
-      }),
+      type: 'select',
+      proxies: ['默认节点', '最低延迟节点', ...proxyNames, 'DIRECT'],
     });
   }
 
-  // 4. "Fallback" - the final catch-all selector, defaults to DIRECT
+  // 4. "其他网站" - final catch-all selector, defaults to DIRECT
   groups.push({
-    name: 'Fallback',
+    name: '其他网站',
     type: 'select',
-    proxies: ['DIRECT', 'Global', 'Auto Best', ...proxyNames],
+    proxies: ['DIRECT', '默认节点', '最低延迟节点', ...proxyNames],
   });
 
   return groups;
 }
 
-function buildRules(categories: ServiceCategory[]): string[] {
+function buildRules(
+  categories: ServiceCategory[],
+  resolvedRules: Map<string, RuleEntry[]>,
+): string[] {
   const rules: string[] = [];
 
   // Private/local network rules first
@@ -152,9 +215,10 @@ function buildRules(categories: ServiceCategory[]): string[] {
     'IP-CIDR6,fc00::/7,DIRECT',
   );
 
-  // Service category rules
+  // Service category rules (merged providers + extraRules)
   for (const category of categories) {
-    for (const rule of category.rules) {
+    const entries = resolvedRules.get(category.id) || [];
+    for (const rule of entries) {
       rules.push(`${rule.type},${rule.value},${category.name}`);
     }
   }
@@ -163,7 +227,7 @@ function buildRules(categories: ServiceCategory[]): string[] {
   rules.push('GEOIP,CN,DIRECT');
 
   // Final catch-all
-  rules.push('MATCH,Fallback');
+  rules.push('MATCH,其他网站');
 
   return rules;
 }
@@ -172,10 +236,11 @@ function buildRules(categories: ServiceCategory[]): string[] {
  * Generates a config for preview purposes (with dummy proxies).
  */
 export async function generatePreviewConfig(): Promise<string> {
-  const categoriesSnap = await db.collection('serviceCategories').orderBy('order').get();
-  const categories = categoriesSnap.docs.map(
-    (doc) => ({ id: doc.id, ...doc.data() }) as ServiceCategory,
-  );
+  const categories = await loadCategories();
+  const resolvedRules = new Map<string, RuleEntry[]>();
+  for (const cat of categories) {
+    resolvedRules.set(cat.id, await resolveCategoryRules(cat));
+  }
 
   const dummyProxies: ProxyNode[] = [
     { name: 'Example-HK-01', type: 'trojan', server: '0.0.0.0', port: 443, password: 'xxx' },
@@ -183,7 +248,7 @@ export async function generatePreviewConfig(): Promise<string> {
   ];
   const proxyNames = dummyProxies.map((p) => p.name);
 
-  const config = buildConfig(dummyProxies, proxyNames, categories);
+  const config = buildConfig(dummyProxies, proxyNames, categories, resolvedRules);
 
   return yaml.dump(config, {
     lineWidth: -1,

@@ -144,3 +144,6 @@ vite.config.ts.timestamp-*
 
 # Backend build output
 backend/dist/
+
+# On-disk NicoNeco data (rule-provider caches, per-user YAML)
+backend/data/

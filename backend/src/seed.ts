@@ -12,12 +12,11 @@ async function seed() {
     {
       name: 'Streaming',
       icon: 'movie',
-      groupType: 'select',
       description: 'Video streaming services (Netflix, YouTube, Disney+, etc.)',
       order: 1,
-      isBuiltIn: true,
       createdAt: new Date().toISOString(),
-      rules: [
+      ruleProviders: [],
+      extraRules: [
         // Netflix
         { type: 'DOMAIN-SUFFIX', value: 'netflix.com' },
         { type: 'DOMAIN-SUFFIX', value: 'netflix.net' },
@@ -65,12 +64,11 @@ async function seed() {
     {
       name: 'Gaming',
       icon: 'sports_esports',
-      groupType: 'select',
       description: 'Gaming platforms and services (Steam, Epic, PlayStation, Xbox, etc.)',
       order: 2,
-      isBuiltIn: true,
       createdAt: new Date().toISOString(),
-      rules: [
+      ruleProviders: [],
+      extraRules: [
         // Steam
         { type: 'DOMAIN-SUFFIX', value: 'steampowered.com' },
         { type: 'DOMAIN-SUFFIX', value: 'steamcommunity.com' },
@@ -113,12 +111,11 @@ async function seed() {
     {
       name: 'Social Media',
       icon: 'forum',
-      groupType: 'select',
       description: 'Social media platforms (Twitter/X, Instagram, Facebook, TikTok, etc.)',
       order: 3,
-      isBuiltIn: true,
       createdAt: new Date().toISOString(),
-      rules: [
+      ruleProviders: [],
+      extraRules: [
         // Twitter / X
         { type: 'DOMAIN-SUFFIX', value: 'twitter.com' },
         { type: 'DOMAIN-SUFFIX', value: 'x.com' },
@@ -159,12 +156,11 @@ async function seed() {
     {
       name: 'AI Services',
       icon: 'psychology',
-      groupType: 'select',
       description: 'AI and machine learning platforms (OpenAI, Claude, Google AI, etc.)',
       order: 4,
-      isBuiltIn: true,
       createdAt: new Date().toISOString(),
-      rules: [
+      ruleProviders: [],
+      extraRules: [
         { type: 'DOMAIN-SUFFIX', value: 'openai.com' },
         { type: 'DOMAIN-SUFFIX', value: 'chat.openai.com' },
         { type: 'DOMAIN-SUFFIX', value: 'ai.com' },
@@ -184,12 +180,11 @@ async function seed() {
     {
       name: 'Blocked Sites',
       icon: 'block',
-      groupType: 'select',
       description: 'Commonly blocked services (Google, Wikipedia, etc.)',
       order: 5,
-      isBuiltIn: true,
       createdAt: new Date().toISOString(),
-      rules: [
+      ruleProviders: [],
+      extraRules: [
         // Google
         { type: 'DOMAIN-SUFFIX', value: 'google.com' },
         { type: 'DOMAIN-SUFFIX', value: 'google.co.jp' },
@@ -239,12 +234,11 @@ async function seed() {
     {
       name: 'Developer',
       icon: 'code',
-      groupType: 'select',
       description: 'Developer tools and package registries',
       order: 6,
-      isBuiltIn: true,
       createdAt: new Date().toISOString(),
-      rules: [
+      ruleProviders: [],
+      extraRules: [
         { type: 'DOMAIN-SUFFIX', value: 'npmjs.org' },
         { type: 'DOMAIN-SUFFIX', value: 'npmjs.com' },
         { type: 'DOMAIN-SUFFIX', value: 'yarnpkg.com' },
