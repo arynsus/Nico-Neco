@@ -47,17 +47,16 @@ export default function Layout() {
           </div>
         </div>
 
-        <nav className="flex-1 space-y-2 overflow-y-auto">
+        <nav className="flex-1 space-y-2 overflow-y-auto overflow-x-hidden">
           {navItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               end={item.to === '/'}
               className={({ isActive }) =>
-                `flex items-center gap-4 mx-4 px-4 py-3 rounded-full transition-all duration-300 ${
-                  isActive
-                    ? 'bg-stone-200 text-orange-900 shadow-inner translate-x-1 font-semibold'
-                    : 'text-stone-500 hover:bg-stone-200/50'
+                `flex items-center gap-4 mx-4 px-4 py-3 rounded-full transition-all duration-300 ${isActive
+                  ? 'bg-stone-200 text-orange-900 shadow-inner translate-x-1 font-semibold'
+                  : 'text-stone-500 hover:bg-stone-200/50'
                 }`
               }
             >
@@ -118,8 +117,7 @@ export default function Layout() {
             to={item.to}
             end={item.to === '/'}
             className={({ isActive }) =>
-              `flex flex-col items-center gap-1 ${
-                isActive ? 'text-orange-900 font-semibold' : 'text-stone-500'
+              `flex flex-col items-center gap-1 ${isActive ? 'text-orange-900 font-semibold' : 'text-stone-500'
               }`
             }
           >

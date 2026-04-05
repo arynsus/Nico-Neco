@@ -1,0 +1,37 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: nico-neco-backend
+    container_name: nico-neco-backend
+    restart: unless-stopped
+    volumes:
+      # Named volume for persistent data storage (e.g. user configs, rule providers)
+      - nico-neco-data:/app/data
+      # Read-only bind mount for the Firebase service account
+      - ./backend/firebase-service-account.json:/app/firebase-service-account.json:ro
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - FIREBASE_SERVICE_ACCOUNT_PATH=/app/firebase-service-account.json
+      - CORS_ORIGIN=https://nico-neco.mirhardt.com
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: nico-neco-frontend
+    container_name: nico-neco-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Map the exact NAS certificate folder to the /certs folder in Nginx
+      - /volume1/docker/certs:/certs:ro
+    depends_on:
+      - backend
+
+volumes:
+  nico-neco-data:
