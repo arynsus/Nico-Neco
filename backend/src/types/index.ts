@@ -84,10 +84,9 @@ export interface User {
 export interface ClashConfig {
   port: number;
   'socks-port': number;
-  'allow-lan': boolean;
   mode: string;
-  'log-level': string;
   'external-controller': string;
+  ipv6: boolean;
   dns: Record<string, unknown>;
   proxies: ProxyNode[];
   'proxy-groups': ProxyGroup[];

@@ -129,26 +129,29 @@ function buildConfig(
   return {
     port: 7890,
     'socks-port': 7891,
-    'allow-lan': false,
     mode: 'rule',
-    'log-level': 'info',
     'external-controller': '127.0.0.1:9090',
+    ipv6: false,
     dns: {
       enable: true,
       listen: '0.0.0.0:53',
-      'enhanced-mode': 'fake-ip',
-      'fake-ip-range': '198.18.0.1/16',
-      nameserver: ['https://dns.alidns.com/dns-query', 'https://doh.pub/dns-query'],
-      fallback: [
-        'https://1.1.1.1/dns-query',
-        'https://dns.google/dns-query',
-        'tls://8.8.8.8:853',
+      'default-nameserver': [
+        '114.114.114.114',
+        '8.8.8.8'
       ],
-      'fallback-filter': {
-        geoip: true,
-        'geoip-code': 'CN',
-        ipcidr: ['240.0.0.0/4'],
-      },
+      'fake-ip-range': '198.18.0.1/16',
+      fallback: [
+        '1.1.1.1',
+        '8.8.8.8'
+      ],
+      'fake-ip-filter': [
+        '*.lan',
+        'localhost.ptlogin2.qq.com'
+      ],
+      nameserver: [
+        '114.114.114.114',
+        '8.8.8.8'
+      ]
     },
     proxies: cleanProxies,
     'proxy-groups': proxyGroups,
