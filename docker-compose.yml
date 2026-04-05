@@ -15,7 +15,7 @@ services:
       - PORT=3000
       - NODE_ENV=production
       - FIREBASE_SERVICE_ACCOUNT_PATH=/app/firebase-service-account.json
-      - CORS_ORIGIN=https://nico-neco.mirhardt.com
+      - CORS_ORIGIN=https://nico-neco.mirhardt.com:1443
 
   frontend:
     build:
@@ -25,8 +25,8 @@ services:
     container_name: nico-neco-frontend
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
+      - "1080:80"
+      - "1443:443"
     volumes:
       # Map the exact NAS certificate folder to the /certs folder in Nginx
       - /volume1/docker/certs:/certs:ro
