@@ -8,7 +8,7 @@ services:
     restart: unless-stopped
     volumes:
       # Named volume for persistent data storage (SQLite database, user configs, rule providers)
-      - nico-neco-data:/app/data
+      - /volume1/docker/Nico-Neco-data:/app/data
     environment:
       - PORT=3000
       - NODE_ENV=production
