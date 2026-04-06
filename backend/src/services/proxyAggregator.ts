@@ -1,5 +1,5 @@
-import { db } from '../config/firebase';
-import { Source, ProxyNode, Tier } from '../types';
+import { db, rowToSource, rowToTier } from '../config/database';
+import { ProxyNode, Tier } from '../types';
 
 interface AggregatedResult {
   proxies: ProxyNode[];
@@ -8,19 +8,18 @@ interface AggregatedResult {
 
 /**
  * Gets proxies from all active sources using their cached proxies.
- * No remote fetching — uses what's stored in Firestore.
+ * No remote fetching — uses what's stored in SQLite.
  */
-export async function fetchAllProxies(): Promise<AggregatedResult> {
-  const snapshot = await db.collection('sources').where('isActive', '==', true).get();
-  const sources = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }) as Source);
+export function fetchAllProxies(): AggregatedResult {
+  const rows = db.prepare('SELECT * FROM sources WHERE is_active = 1').all() as any[];
+  const sources = rows.map(rowToSource);
 
   const sourceMap = new Map<string, ProxyNode[]>();
   const allProxies: ProxyNode[] = [];
 
   for (const source of sources) {
     const cached = source.cachedProxies || [];
-    // Tag proxy names with source for uniqueness
-    const taggedProxies = cached.map((p) => ({
+    const taggedProxies = cached.map((p: ProxyNode) => ({
       ...p,
       name: `[${source.name}] ${p.name}`,
       _sourceId: source.id,
@@ -36,14 +35,14 @@ export async function fetchAllProxies(): Promise<AggregatedResult> {
 /**
  * Fetches proxies filtered by tier (only from sources the tier allows).
  */
-export async function fetchProxiesForTier(tierId: string): Promise<ProxyNode[]> {
-  const tierDoc = await db.collection('tiers').doc(tierId).get();
-  if (!tierDoc.exists) {
+export function fetchProxiesForTier(tierId: string): ProxyNode[] {
+  const tierRow = db.prepare('SELECT * FROM tiers WHERE id = ?').get(tierId) as any;
+  if (!tierRow) {
     throw new Error(`Tier ${tierId} not found`);
   }
 
-  const tier = { id: tierDoc.id, ...tierDoc.data() } as Tier;
-  const { sourceMap } = await fetchAllProxies();
+  const tier = rowToTier(tierRow);
+  const { sourceMap } = fetchAllProxies();
 
   const allowedProxies: ProxyNode[] = [];
   for (const sourceId of tier.allowedSourceIds) {

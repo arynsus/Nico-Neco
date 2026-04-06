@@ -1,38 +1,20 @@
 import { Router } from 'express';
-import { db } from '../config/firebase';
+import { db, rowToSource, rowToTier } from '../config/database';
 import { requireAuth } from '../middleware/auth';
-import { Source } from '../types';
+import { v4 as uuidv4 } from 'uuid';
 import { fetchSubscriptionProxies } from '../services/sourceParser';
 import { MarzbanClient } from '../services/marzbanClient';
 
-/** Recursively strip undefined values (Firestore rejects them). */
-function stripUndefined<T>(obj: T): T {
-  if (obj === null || obj === undefined || typeof obj !== 'object') return obj;
-  if (Array.isArray(obj)) return obj.map(stripUndefined) as unknown as T;
-  const clean: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
-    if (value !== undefined) {
-      clean[key] = stripUndefined(value);
-    }
-  }
-  return clean as T;
-}
-
 const router = Router();
 
-// List all sources
-router.get('/', requireAuth, async (_req, res) => {
+// List all sources (no cachedProxies in list view — metadata only)
+router.get('/', requireAuth, (_req, res) => {
   try {
-    const snapshot = await db.collection('sources').orderBy('createdAt', 'desc').get();
-    const sources = snapshot.docs.map((doc) => {
-      const data = doc.data();
-      // Don't send full cached proxies in list view — just metadata
-      return {
-        id: doc.id,
-        ...data,
-        cachedProxies: undefined,
-        proxyCount: data.cachedProxies?.length ?? data.proxyCount ?? 0,
-      };
+    const rows = db.prepare('SELECT * FROM sources ORDER BY created_at DESC').all() as any[];
+    const sources = rows.map((row) => {
+      const s = rowToSource(row);
+      const { cachedProxies, ...meta } = s;
+      return { ...meta, proxyCount: s.proxyCount };
     });
     res.json(sources);
   } catch (err) {
@@ -40,33 +22,30 @@ router.get('/', requireAuth, async (_req, res) => {
   }
 });
 
-// Get cached proxies for a source (must be before /:id to avoid route conflict)
-router.get('/:id/proxies', requireAuth, async (req, res) => {
+// Get cached proxies for a source (must be before /:id)
+router.get('/:id/proxies', requireAuth, (req, res) => {
   try {
-    const doc = await db.collection('sources').doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ error: 'Source not found' });
-    const data = doc.data()!;
-    res.json(data.cachedProxies || []);
+    const row = db.prepare('SELECT cached_proxies FROM sources WHERE id = ?').get(req.params.id) as any;
+    if (!row) return res.status(404).json({ error: 'Source not found' });
+    res.json(JSON.parse(row.cached_proxies));
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch proxies' });
   }
 });
 
-// Update cached proxies (remove or reorder) (must be before /:id)
-router.put('/:id/proxies', requireAuth, async (req, res) => {
+// Update cached proxies (must be before /:id)
+router.put('/:id/proxies', requireAuth, (req, res) => {
   try {
-    const doc = await db.collection('sources').doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ error: 'Source not found' });
+    const row = db.prepare('SELECT id FROM sources WHERE id = ?').get(req.params.id) as any;
+    if (!row) return res.status(404).json({ error: 'Source not found' });
 
     const { proxies } = req.body;
     if (!Array.isArray(proxies)) {
       return res.status(400).json({ error: 'proxies must be an array' });
     }
 
-    await db.collection('sources').doc(req.params.id).update({
-      cachedProxies: proxies,
-      proxyCount: proxies.length,
-    });
+    db.prepare('UPDATE sources SET cached_proxies = ?, proxy_count = ? WHERE id = ?')
+      .run(JSON.stringify(proxies), proxies.length, req.params.id);
 
     res.json({ success: true, proxyCount: proxies.length });
   } catch (err) {
@@ -75,88 +54,102 @@ router.put('/:id/proxies', requireAuth, async (req, res) => {
 });
 
 // Get a single source
-router.get('/:id', requireAuth, async (req, res) => {
+router.get('/:id', requireAuth, (req, res) => {
   try {
-    const doc = await db.collection('sources').doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ error: 'Source not found' });
-    res.json({ id: doc.id, ...doc.data() });
+    const row = db.prepare('SELECT * FROM sources WHERE id = ?').get(req.params.id) as any;
+    if (!row) return res.status(404).json({ error: 'Source not found' });
+    res.json(rowToSource(row));
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch source' });
   }
 });
 
 // Create a new source
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, (req, res) => {
   try {
     const { name, type, url, credentials, tags } = req.body;
     if (!name || !type || !url) {
       return res.status(400).json({ error: 'name, type, and url are required' });
     }
 
-    const source: Omit<Source, 'id'> = {
-      name,
-      type,
-      url,
-      credentials: credentials || null,
-      isActive: true,
-      lastFetched: null,
-      proxyCount: 0,
-      cachedProxies: [],
-      tags: tags || [],
-      createdAt: new Date().toISOString(),
-    };
+    const id = uuidv4();
+    const createdAt = new Date().toISOString();
 
-    const ref = await db.collection('sources').add(source);
-    res.status(201).json({ id: ref.id, ...source, cachedProxies: undefined });
+    db.prepare(
+      'INSERT INTO sources (id, name, type, url, credentials, is_active, last_fetched, proxy_count, cached_proxies, tags, created_at) VALUES (?, ?, ?, ?, ?, 1, NULL, 0, ?, ?, ?)',
+    ).run(
+      id, name, type, url,
+      credentials ? JSON.stringify(credentials) : null,
+      '[]',
+      JSON.stringify(tags || []),
+      createdAt,
+    );
+
+    res.status(201).json({ id, name, type, url, credentials: credentials || null, isActive: true, lastFetched: null, proxyCount: 0, tags: tags || [], createdAt });
   } catch (err) {
     res.status(500).json({ error: 'Failed to create source' });
   }
 });
 
 // Update a source
-router.put('/:id', requireAuth, async (req, res) => {
+router.put('/:id', requireAuth, (req, res) => {
   try {
-    const doc = await db.collection('sources').doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ error: 'Source not found' });
+    const existing = db.prepare('SELECT id FROM sources WHERE id = ?').get(req.params.id) as any;
+    if (!existing) return res.status(404).json({ error: 'Source not found' });
 
-    const updates: Partial<Source> = {};
-    const allowed = ['name', 'type', 'url', 'credentials', 'isActive', 'tags'];
-    for (const key of allowed) {
+    const setClauses: string[] = [];
+    const values: any[] = [];
+
+    const fieldMap: Record<string, string> = {
+      name: 'name', type: 'type', url: 'url', isActive: 'is_active', tags: 'tags', credentials: 'credentials',
+    };
+
+    for (const [key, col] of Object.entries(fieldMap)) {
       if (req.body[key] !== undefined) {
-        (updates as Record<string, unknown>)[key] = req.body[key];
+        setClauses.push(`${col} = ?`);
+        if (key === 'isActive') {
+          values.push(req.body[key] ? 1 : 0);
+        } else if (key === 'tags' || key === 'credentials') {
+          values.push(req.body[key] !== null ? JSON.stringify(req.body[key]) : null);
+        } else {
+          values.push(req.body[key]);
+        }
       }
     }
 
-    await db.collection('sources').doc(req.params.id).update(updates);
-    const updated = await db.collection('sources').doc(req.params.id).get();
-    const data = updated.data()!;
-    res.json({ id: updated.id, ...data, cachedProxies: undefined });
+    if (setClauses.length > 0) {
+      values.push(req.params.id);
+      db.prepare(`UPDATE sources SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+    }
+
+    const updated = db.prepare('SELECT * FROM sources WHERE id = ?').get(req.params.id) as any;
+    const { cachedProxies, ...meta } = rowToSource(updated);
+    res.json(meta);
   } catch (err) {
     res.status(500).json({ error: 'Failed to update source' });
   }
 });
 
 // Delete a source
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', requireAuth, (req, res) => {
   try {
-    const doc = await db.collection('sources').doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ error: 'Source not found' });
-    await db.collection('sources').doc(req.params.id).delete();
+    const row = db.prepare('SELECT id FROM sources WHERE id = ?').get(req.params.id) as any;
+    if (!row) return res.status(404).json({ error: 'Source not found' });
+    db.prepare('DELETE FROM sources WHERE id = ?').run(req.params.id);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete source' });
   }
 });
 
-// Test/refresh a source (fetch proxies and cache them).
-// Automatically marks the source Active on success, Offline on failure.
+// Test/refresh a source — fetches proxies and caches them
 router.post('/:id/test', requireAuth, async (req, res) => {
   const sourceId = req.params.id;
   try {
-    const doc = await db.collection('sources').doc(sourceId).get();
-    if (!doc.exists) return res.status(404).json({ error: 'Source not found' });
+    const row = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any;
+    if (!row) return res.status(404).json({ error: 'Source not found' });
 
-    const source = doc.data() as Source;
+    const source = rowToSource(row);
     let proxies: any[] = [];
 
     try {
@@ -167,21 +160,13 @@ router.post('/:id/test', requireAuth, async (req, res) => {
         proxies = await client.getProxyNodes();
       }
     } catch (fetchErr: any) {
-      // Mark offline
-      await db.collection('sources').doc(sourceId).update({
-        lastFetched: new Date().toISOString(),
-        isActive: false,
-      });
+      db.prepare('UPDATE sources SET last_fetched = ?, is_active = 0 WHERE id = ?')
+        .run(new Date().toISOString(), sourceId);
       return res.status(500).json({ error: `Test failed: ${fetchErr.message}` });
     }
 
-    // Cache the proxies and mark active
-    await db.collection('sources').doc(sourceId).update({
-      lastFetched: new Date().toISOString(),
-      proxyCount: proxies.length,
-      cachedProxies: stripUndefined(proxies),
-      isActive: proxies.length > 0,
-    });
+    db.prepare('UPDATE sources SET last_fetched = ?, proxy_count = ?, cached_proxies = ?, is_active = ? WHERE id = ?')
+      .run(new Date().toISOString(), proxies.length, JSON.stringify(proxies), proxies.length > 0 ? 1 : 0, sourceId);
 
     res.json({ success: true, proxyCount: proxies.length, isActive: proxies.length > 0 });
   } catch (err: any) {
@@ -192,68 +177,54 @@ router.post('/:id/test', requireAuth, async (req, res) => {
 // Marzban: sync users
 router.post('/:id/sync-users', requireAuth, async (req, res) => {
   try {
-    const doc = await db.collection('sources').doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ error: 'Source not found' });
+    const row = db.prepare('SELECT * FROM sources WHERE id = ?').get(req.params.id) as any;
+    if (!row) return res.status(404).json({ error: 'Source not found' });
 
-    const source = doc.data() as Source;
+    const source = rowToSource(row);
     if (source.type !== 'marzban' || !source.credentials) {
       return res.status(400).json({ error: 'User sync is only available for Marzban sources' });
     }
 
     const client = new MarzbanClient(source.url, source.credentials.username, source.credentials.password);
 
-    // Get all NicoNeco users whose tier allows this source
-    const tiersSnap = await db.collection('tiers').get();
+    // Find all tiers that allow this source
+    const tierRows = db.prepare('SELECT * FROM tiers').all() as any[];
     const allowedTierIds: string[] = [];
-    for (const tierDoc of tiersSnap.docs) {
-      const tier = tierDoc.data();
-      if (tier.allowedSourceIds?.includes(req.params.id)) {
-        allowedTierIds.push(tierDoc.id);
+    for (const tierRow of tierRows) {
+      const tier = rowToTier(tierRow);
+      if (tier.allowedSourceIds.includes(req.params.id)) {
+        allowedTierIds.push(tier.id);
       }
     }
 
     const nicoUsers: { name: string; subscriptionToken: string; isActive: boolean }[] = [];
     if (allowedTierIds.length > 0) {
-      // Firestore 'in' queries support max 30 values at a time
-      for (let i = 0; i < allowedTierIds.length; i += 30) {
-        const chunk = allowedTierIds.slice(i, i + 30);
-        const usersSnap = await db.collection('users').where('tierId', 'in', chunk).get();
-        for (const userDoc of usersSnap.docs) {
-          const u = userDoc.data();
-          nicoUsers.push({
-            name: u.name,
-            subscriptionToken: u.subscriptionToken,
-            isActive: u.isActive,
-          });
-        }
+      const placeholders = allowedTierIds.map(() => '?').join(',');
+      const userRows = db.prepare(`SELECT * FROM users WHERE tier_id IN (${placeholders})`).all(...allowedTierIds) as any[];
+      for (const u of userRows) {
+        nicoUsers.push({ name: u.name, subscriptionToken: u.subscription_token, isActive: u.is_active === 1 });
       }
     }
 
-    // Get current remote users
     const remoteUsers = await client.listUsers();
     const remoteMap = new Map(remoteUsers.map((u) => [u.username, u]));
 
     const results = { created: 0, updated: 0, deleted: 0, errors: [] as string[] };
     const nicoUsernames = new Set(nicoUsers.filter((u) => u.isActive).map((u) => u.name));
 
-    // Create or update NicoNeco users on Marzban
     for (const user of nicoUsers) {
       if (!user.isActive) continue;
-
       try {
         const remote = remoteMap.get(user.name);
         if (!remote) {
-          // Create user on Marzban
           await client.createUser(user.name, user.subscriptionToken);
           results.created++;
         } else {
-          // Check if uuid matches - if not, update
           const needsUpdate = Object.values(remote.proxies).some((p: any) => {
             if (p.id && p.id !== user.subscriptionToken) return true;
             if (p.password && p.password !== user.subscriptionToken) return true;
             return false;
           });
-
           if (needsUpdate) {
             await client.modifyUser(user.name, user.subscriptionToken);
             results.updated++;
@@ -264,11 +235,8 @@ router.post('/:id/sync-users', requireAuth, async (req, res) => {
       }
     }
 
-    // Delete remote users that don't exist in NicoNeco (or are inactive)
     for (const [remoteUsername] of remoteMap) {
-      // Skip the admin user itself
-      if (remoteUsername === source.credentials.username) continue;
-
+      if (remoteUsername === source.credentials!.username) continue;
       if (!nicoUsernames.has(remoteUsername)) {
         try {
           await client.deleteUser(remoteUsername);

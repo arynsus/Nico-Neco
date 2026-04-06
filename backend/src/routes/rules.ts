@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
-import { db } from '../config/firebase';
+import { db, rowToCategory } from '../config/database';
 import { requireAuth } from '../middleware/auth';
+import { v4 as uuidv4 } from 'uuid';
 import { ServiceCategory, RuleProvider } from '../types';
 import { generatePreviewConfig } from '../services/configGenerator';
 import {
@@ -13,28 +14,6 @@ import {
 
 const router = Router();
 
-/**
- * Normalize a raw Firestore doc into a ServiceCategory with defaults
- * (tolerates legacy documents that stored rules/groupType/isBuiltIn).
- */
-function normalizeCategory(id: string, raw: Record<string, unknown>): ServiceCategory {
-  const legacyRules = Array.isArray(raw.rules) ? (raw.rules as any[]) : [];
-  return {
-    id,
-    name: (raw.name as string) || '',
-    icon: (raw.icon as string) || 'category',
-    description: (raw.description as string) || '',
-    ruleProviders: Array.isArray(raw.ruleProviders) ? (raw.ruleProviders as RuleProvider[]) : [],
-    extraRules: Array.isArray(raw.extraRules) ? (raw.extraRules as any[]) : legacyRules,
-    order: typeof raw.order === 'number' ? (raw.order as number) : 99,
-    createdAt: (raw.createdAt as string) || '',
-  };
-}
-
-/**
- * Attach per-provider on-disk status (lastFetched, ruleCount, fileSize) to
- * the serialized category for frontend display.
- */
 async function enrichCategory(cat: ServiceCategory) {
   const providerIds = cat.ruleProviders.map((p) => p.id);
   const statuses = await getCategoryProviderStatuses(cat.id, providerIds);
@@ -47,8 +26,8 @@ async function enrichCategory(cat: ServiceCategory) {
 // List all service categories
 router.get('/', requireAuth, async (_req, res) => {
   try {
-    const snapshot = await db.collection('serviceCategories').orderBy('order').get();
-    const categories = snapshot.docs.map((doc) => normalizeCategory(doc.id, doc.data()));
+    const rows = db.prepare('SELECT * FROM service_categories ORDER BY order_num').all() as any[];
+    const categories = rows.map(rowToCategory);
     const enriched = await Promise.all(categories.map(enrichCategory));
     res.json(enriched);
   } catch (err) {
@@ -70,9 +49,9 @@ router.get('/config/preview', requireAuth, async (_req, res) => {
 // Get a single service category
 router.get('/:id', requireAuth, async (req, res) => {
   try {
-    const doc = await db.collection('serviceCategories').doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ error: 'Category not found' });
-    const cat = normalizeCategory(doc.id, doc.data()!);
+    const row = db.prepare('SELECT * FROM service_categories WHERE id = ?').get(req.params.id) as any;
+    if (!row) return res.status(404).json({ error: 'Category not found' });
+    const cat = rowToCategory(row);
     res.json(await enrichCategory(cat));
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch category' });
@@ -85,18 +64,20 @@ router.post('/', requireAuth, async (req, res) => {
     const { name, icon, description, ruleProviders, extraRules, order } = req.body;
     if (!name) return res.status(400).json({ error: 'name is required' });
 
-    const category: Omit<ServiceCategory, 'id'> = {
-      name,
-      icon: icon || 'category',
-      description: description || '',
-      ruleProviders: Array.isArray(ruleProviders) ? ruleProviders : [],
-      extraRules: Array.isArray(extraRules) ? extraRules : [],
-      order: order ?? 99,
-      createdAt: new Date().toISOString(),
-    };
+    const id = uuidv4();
+    const createdAt = new Date().toISOString();
+    const orderNum = order ?? 99;
 
-    const ref = await db.collection('serviceCategories').add(category);
-    res.status(201).json({ id: ref.id, ...category });
+    db.prepare(
+      'INSERT INTO service_categories (id, name, icon, description, rule_providers, extra_rules, order_num, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      id, name, icon || 'category', description || '',
+      JSON.stringify(Array.isArray(ruleProviders) ? ruleProviders : []),
+      JSON.stringify(Array.isArray(extraRules) ? extraRules : []),
+      orderNum, createdAt,
+    );
+
+    res.status(201).json({ id, name, icon: icon || 'category', description: description || '', ruleProviders: ruleProviders || [], extraRules: extraRules || [], order: orderNum, createdAt });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to create category' });
@@ -106,29 +87,39 @@ router.post('/', requireAuth, async (req, res) => {
 // Update a service category
 router.put('/:id', requireAuth, async (req, res) => {
   try {
-    const doc = await db.collection('serviceCategories').doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ error: 'Category not found' });
+    const existing = db.prepare('SELECT id FROM service_categories WHERE id = ?').get(req.params.id) as any;
+    if (!existing) return res.status(404).json({ error: 'Category not found' });
 
-    const updates: Record<string, unknown> = {};
-    const allowed = ['name', 'icon', 'description', 'ruleProviders', 'extraRules', 'order'];
-    for (const key of allowed) {
+    const setClauses: string[] = [];
+    const values: any[] = [];
+
+    const fieldMap: Record<string, string> = {
+      name: 'name', icon: 'icon', description: 'description',
+      ruleProviders: 'rule_providers', extraRules: 'extra_rules', order: 'order_num',
+    };
+
+    for (const [key, col] of Object.entries(fieldMap)) {
       if (req.body[key] !== undefined) {
-        // Strip any stale `status` field off incoming provider objects.
-        if (key === 'ruleProviders' && Array.isArray(req.body[key])) {
-          updates[key] = (req.body[key] as any[]).map((p) => ({
-            id: p.id,
-            name: p.name,
-            url: p.url,
-          }));
+        setClauses.push(`${col} = ?`);
+        if (key === 'ruleProviders') {
+          // Strip any stale `status` field off incoming provider objects
+          const cleaned = (req.body[key] as any[]).map((p) => ({ id: p.id, name: p.name, url: p.url }));
+          values.push(JSON.stringify(cleaned));
+        } else if (key === 'extraRules') {
+          values.push(JSON.stringify(req.body[key]));
         } else {
-          updates[key] = req.body[key];
+          values.push(req.body[key]);
         }
       }
     }
 
-    await db.collection('serviceCategories').doc(req.params.id).update(updates);
-    const updated = await db.collection('serviceCategories').doc(req.params.id).get();
-    const cat = normalizeCategory(updated.id, updated.data()!);
+    if (setClauses.length > 0) {
+      values.push(req.params.id);
+      db.prepare(`UPDATE service_categories SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+    }
+
+    const updated = db.prepare('SELECT * FROM service_categories WHERE id = ?').get(req.params.id) as any;
+    const cat = rowToCategory(updated);
     res.json(await enrichCategory(cat));
   } catch (err) {
     console.error(err);
@@ -139,10 +130,10 @@ router.put('/:id', requireAuth, async (req, res) => {
 // Delete a service category (also clears its on-disk provider cache)
 router.delete('/:id', requireAuth, async (req, res) => {
   try {
-    const doc = await db.collection('serviceCategories').doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ error: 'Category not found' });
+    const row = db.prepare('SELECT id FROM service_categories WHERE id = ?').get(req.params.id) as any;
+    if (!row) return res.status(404).json({ error: 'Category not found' });
 
-    await db.collection('serviceCategories').doc(req.params.id).delete();
+    db.prepare('DELETE FROM service_categories WHERE id = ?').run(req.params.id);
     await deleteCategoryProviderDir(req.params.id);
     res.json({ success: true });
   } catch (err) {
@@ -150,18 +141,15 @@ router.delete('/:id', requireAuth, async (req, res) => {
   }
 });
 
-/**
- * Add a new rule provider URL to a category. Fetches immediately.
- */
+// Add a new rule provider URL to a category — fetches immediately
 router.post('/:id/providers', requireAuth, async (req, res) => {
   try {
     const { name, url } = req.body;
     if (!url) return res.status(400).json({ error: 'url is required' });
 
-    const docRef = db.collection('serviceCategories').doc(req.params.id);
-    const doc = await docRef.get();
-    if (!doc.exists) return res.status(404).json({ error: 'Category not found' });
-    const cat = normalizeCategory(doc.id, doc.data()!);
+    const row = db.prepare('SELECT * FROM service_categories WHERE id = ?').get(req.params.id) as any;
+    if (!row) return res.status(404).json({ error: 'Category not found' });
+    const cat = rowToCategory(row);
 
     const provider: RuleProvider = {
       id: randomUUID(),
@@ -170,9 +158,9 @@ router.post('/:id/providers', requireAuth, async (req, res) => {
     };
 
     const newProviders = [...cat.ruleProviders, provider];
-    await docRef.update({ ruleProviders: newProviders });
+    db.prepare('UPDATE service_categories SET rule_providers = ? WHERE id = ?')
+      .run(JSON.stringify(newProviders), req.params.id);
 
-    // Fetch immediately so the UI shows a populated status.
     let status;
     try {
       status = await fetchAndCacheProvider(cat.id, provider.id, provider.url);
@@ -187,14 +175,12 @@ router.post('/:id/providers', requireAuth, async (req, res) => {
   }
 });
 
-/**
- * Refresh (re-fetch) a provider's cache file.
- */
+// Refresh (re-fetch) a provider's cache file
 router.post('/:id/providers/:providerId/fetch', requireAuth, async (req, res) => {
   try {
-    const doc = await db.collection('serviceCategories').doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ error: 'Category not found' });
-    const cat = normalizeCategory(doc.id, doc.data()!);
+    const row = db.prepare('SELECT * FROM service_categories WHERE id = ?').get(req.params.id) as any;
+    if (!row) return res.status(404).json({ error: 'Category not found' });
+    const cat = rowToCategory(row);
 
     const provider = cat.ruleProviders.find((p) => p.id === req.params.providerId);
     if (!provider) return res.status(404).json({ error: 'Provider not found' });
@@ -206,18 +192,16 @@ router.post('/:id/providers/:providerId/fetch', requireAuth, async (req, res) =>
   }
 });
 
-/**
- * Remove a provider from a category (and delete its cached file).
- */
+// Remove a provider from a category (and delete its cached file)
 router.delete('/:id/providers/:providerId', requireAuth, async (req, res) => {
   try {
-    const docRef = db.collection('serviceCategories').doc(req.params.id);
-    const doc = await docRef.get();
-    if (!doc.exists) return res.status(404).json({ error: 'Category not found' });
-    const cat = normalizeCategory(doc.id, doc.data()!);
+    const row = db.prepare('SELECT * FROM service_categories WHERE id = ?').get(req.params.id) as any;
+    if (!row) return res.status(404).json({ error: 'Category not found' });
+    const cat = rowToCategory(row);
 
     const newProviders = cat.ruleProviders.filter((p) => p.id !== req.params.providerId);
-    await docRef.update({ ruleProviders: newProviders });
+    db.prepare('UPDATE service_categories SET rule_providers = ? WHERE id = ?')
+      .run(JSON.stringify(newProviders), req.params.id);
     await deleteProviderCache(cat.id, req.params.providerId);
 
     res.json({ success: true });

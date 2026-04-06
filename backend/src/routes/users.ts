@@ -1,24 +1,22 @@
 import { Router } from 'express';
-import { db } from '../config/firebase';
+import { db, rowToUser, rowToSource, rowToTier } from '../config/database';
 import { requireAuth } from '../middleware/auth';
-import { User, Source } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import { MarzbanClient } from '../services/marzbanClient';
 
 /**
  * Helper: find all active Marzban sources that the user's tier allows,
- * then create the user on each of them.
+ * then create/update the user on each of them.
  */
 async function syncUserToMarzbanSources(userName: string, uuid: string, tierId: string) {
-  const tierDoc = await db.collection('tiers').doc(tierId).get();
-  if (!tierDoc.exists) return;
-  const tier = tierDoc.data()!;
-  const allowedSourceIds: string[] = tier.allowedSourceIds || [];
+  const tierRow = db.prepare('SELECT * FROM tiers WHERE id = ?').get(tierId) as any;
+  if (!tierRow) return;
+  const tier = rowToTier(tierRow);
 
-  for (const sourceId of allowedSourceIds) {
-    const sourceDoc = await db.collection('sources').doc(sourceId).get();
-    if (!sourceDoc.exists) continue;
-    const source = sourceDoc.data() as Source;
+  for (const sourceId of tier.allowedSourceIds) {
+    const sourceRow = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any;
+    if (!sourceRow) continue;
+    const source = rowToSource(sourceRow);
     if (source.type !== 'marzban' || !source.credentials || !source.isActive) continue;
 
     try {
@@ -39,15 +37,14 @@ async function syncUserToMarzbanSources(userName: string, uuid: string, tierId: 
  * Helper: delete a user from all Marzban sources accessible via their tier.
  */
 async function removeUserFromMarzbanSources(userName: string, tierId: string) {
-  const tierDoc = await db.collection('tiers').doc(tierId).get();
-  if (!tierDoc.exists) return;
-  const tier = tierDoc.data()!;
-  const allowedSourceIds: string[] = tier.allowedSourceIds || [];
+  const tierRow = db.prepare('SELECT * FROM tiers WHERE id = ?').get(tierId) as any;
+  if (!tierRow) return;
+  const tier = rowToTier(tierRow);
 
-  for (const sourceId of allowedSourceIds) {
-    const sourceDoc = await db.collection('sources').doc(sourceId).get();
-    if (!sourceDoc.exists) continue;
-    const source = sourceDoc.data() as Source;
+  for (const sourceId of tier.allowedSourceIds) {
+    const sourceRow = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any;
+    if (!sourceRow) continue;
+    const source = rowToSource(sourceRow);
     if (source.type !== 'marzban' || !source.credentials || !source.isActive) continue;
 
     try {
@@ -62,23 +59,23 @@ async function removeUserFromMarzbanSources(userName: string, tierId: string) {
 const router = Router();
 
 // List all users
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, (req, res) => {
   try {
     const { tierId, search } = req.query;
-    let query: FirebaseFirestore.Query = db.collection('users').orderBy('createdAt', 'desc');
 
+    let rows: any[];
     if (tierId) {
-      query = db.collection('users').where('tierId', '==', tierId).orderBy('createdAt', 'desc');
+      rows = db.prepare('SELECT * FROM users WHERE tier_id = ? ORDER BY created_at DESC').all(tierId as string);
+    } else {
+      rows = db.prepare('SELECT * FROM users ORDER BY created_at DESC').all();
     }
 
-    const snapshot = await query.get();
-    let users = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    let users = rows.map(rowToUser);
 
     if (search) {
       const s = (search as string).toLowerCase();
       users = users.filter(
-        (u: any) =>
-          u.name?.toLowerCase().includes(s) || u.email?.toLowerCase().includes(s),
+        (u) => u.name?.toLowerCase().includes(s) || u.email?.toLowerCase().includes(s),
       );
     }
 
@@ -89,11 +86,11 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // Get a single user
-router.get('/:id', requireAuth, async (req, res) => {
+router.get('/:id', requireAuth, (req, res) => {
   try {
-    const doc = await db.collection('users').doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ error: 'User not found' });
-    res.json({ id: doc.id, ...doc.data() });
+    const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id) as any;
+    if (!row) return res.status(404).json({ error: 'User not found' });
+    res.json(rowToUser(row));
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch user' });
   }
@@ -108,27 +105,22 @@ router.post('/', requireAuth, async (req, res) => {
     }
 
     // Verify tier exists
-    const tierDoc = await db.collection('tiers').doc(tierId).get();
-    if (!tierDoc.exists) {
+    const tierRow = db.prepare('SELECT id FROM tiers WHERE id = ?').get(tierId) as any;
+    if (!tierRow) {
       return res.status(400).json({ error: 'Tier not found' });
     }
 
-    const user: Omit<User, 'id'> = {
-      name,
-      email: email || '',
-      tierId,
-      subscriptionToken: uuidv4(),
-      isActive: true,
-      note: note || '',
-      createdAt: new Date().toISOString(),
-    };
+    const id = uuidv4();
+    const subscriptionToken = uuidv4();
+    const createdAt = new Date().toISOString();
 
-    const ref = await db.collection('users').add(user);
+    db.prepare(
+      'INSERT INTO users (id, name, email, tier_id, subscription_token, is_active, note, created_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)',
+    ).run(id, name, email || '', tierId, subscriptionToken, note || '', createdAt);
 
-    // Auto-sync to Marzban sources
-    await syncUserToMarzbanSources(name, user.subscriptionToken, tierId);
+    await syncUserToMarzbanSources(name, subscriptionToken, tierId);
 
-    res.status(201).json({ id: ref.id, ...user });
+    res.status(201).json({ id, name, email: email || '', tierId, subscriptionToken, isActive: true, note: note || '', createdAt });
   } catch (err) {
     res.status(500).json({ error: 'Failed to create user' });
   }
@@ -137,28 +129,39 @@ router.post('/', requireAuth, async (req, res) => {
 // Update a user
 router.put('/:id', requireAuth, async (req, res) => {
   try {
-    const doc = await db.collection('users').doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ error: 'User not found' });
-
-    const updates: Partial<User> = {};
-    const allowed = ['name', 'email', 'tierId', 'isActive', 'note'];
-    for (const key of allowed) {
-      if (req.body[key] !== undefined) {
-        (updates as Record<string, unknown>)[key] = req.body[key];
-      }
-    }
+    const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id) as any;
+    if (!existing) return res.status(404).json({ error: 'User not found' });
 
     // Verify tier exists if changing
-    if (updates.tierId) {
-      const tierDoc = await db.collection('tiers').doc(updates.tierId).get();
-      if (!tierDoc.exists) {
+    if (req.body.tierId !== undefined) {
+      const tierRow = db.prepare('SELECT id FROM tiers WHERE id = ?').get(req.body.tierId) as any;
+      if (!tierRow) {
         return res.status(400).json({ error: 'Tier not found' });
       }
     }
 
-    await db.collection('users').doc(req.params.id).update(updates);
-    const updated = await db.collection('users').doc(req.params.id).get();
-    res.json({ id: updated.id, ...updated.data() });
+    const setClauses: string[] = [];
+    const values: any[] = [];
+
+    const fieldMap: Record<string, string> = {
+      name: 'name', email: 'email', tierId: 'tier_id',
+      isActive: 'is_active', note: 'note',
+    };
+
+    for (const [key, col] of Object.entries(fieldMap)) {
+      if (req.body[key] !== undefined) {
+        setClauses.push(`${col} = ?`);
+        values.push(key === 'isActive' ? (req.body[key] ? 1 : 0) : req.body[key]);
+      }
+    }
+
+    if (setClauses.length > 0) {
+      values.push(req.params.id);
+      db.prepare(`UPDATE users SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+    }
+
+    const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id) as any;
+    res.json(rowToUser(updated));
   } catch (err) {
     res.status(500).json({ error: 'Failed to update user' });
   }
@@ -167,14 +170,12 @@ router.put('/:id', requireAuth, async (req, res) => {
 // Delete a user
 router.delete('/:id', requireAuth, async (req, res) => {
   try {
-    const doc = await db.collection('users').doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ error: 'User not found' });
+    const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id) as any;
+    if (!row) return res.status(404).json({ error: 'User not found' });
 
-    const userData = doc.data()!;
-    // Remove from Marzban sources
-    await removeUserFromMarzbanSources(userData.name, userData.tierId);
+    await removeUserFromMarzbanSources(row.name, row.tier_id);
 
-    await db.collection('users').doc(req.params.id).delete();
+    db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete user' });
@@ -182,13 +183,13 @@ router.delete('/:id', requireAuth, async (req, res) => {
 });
 
 // Regenerate subscription token
-router.post('/:id/regenerate-token', requireAuth, async (req, res) => {
+router.post('/:id/regenerate-token', requireAuth, (req, res) => {
   try {
-    const doc = await db.collection('users').doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ error: 'User not found' });
+    const row = db.prepare('SELECT id FROM users WHERE id = ?').get(req.params.id) as any;
+    if (!row) return res.status(404).json({ error: 'User not found' });
 
     const newToken = uuidv4();
-    await db.collection('users').doc(req.params.id).update({ subscriptionToken: newToken });
+    db.prepare('UPDATE users SET subscription_token = ? WHERE id = ?').run(newToken, req.params.id);
     res.json({ subscriptionToken: newToken });
   } catch (err) {
     res.status(500).json({ error: 'Failed to regenerate token' });

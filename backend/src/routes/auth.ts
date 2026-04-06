@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import bcrypt from 'bcrypt';
-import { db } from '../config/firebase';
+import { db } from '../config/database';
 import { signToken, requireAuth, type AuthRequest } from '../middleware/auth';
 
 const router = Router();
@@ -13,23 +13,18 @@ router.post('/login', async (req, res) => {
   }
 
   try {
-    const snapshot = await db.collection('admins').where('username', '==', username).limit(1).get();
-    if (snapshot.empty) {
+    const row = db.prepare('SELECT * FROM admins WHERE username = ? LIMIT 1').get(username) as any;
+    if (!row) {
       return res.status(401).json({ error: 'Invalid username or password' });
     }
 
-    const doc = snapshot.docs[0];
-    const admin = doc.data();
-    const valid = await bcrypt.compare(password, admin.passwordHash);
+    const valid = await bcrypt.compare(password, row.password_hash);
     if (!valid) {
       return res.status(401).json({ error: 'Invalid username or password' });
     }
 
-    const token = signToken({ id: doc.id, username: admin.username });
-    return res.json({
-      token,
-      admin: { id: doc.id, username: admin.username },
-    });
+    const token = signToken({ id: row.id, username: row.username });
+    return res.json({ token, admin: { id: row.id, username: row.username } });
   } catch (err) {
     console.error('Login error:', err);
     return res.status(500).json({ error: 'Internal server error' });
@@ -53,19 +48,18 @@ router.post('/change-password', requireAuth, async (req: AuthRequest, res) => {
   }
 
   try {
-    const doc = await db.collection('admins').doc(req.adminId!).get();
-    if (!doc.exists) {
+    const row = db.prepare('SELECT * FROM admins WHERE id = ?').get(req.adminId!) as any;
+    if (!row) {
       return res.status(404).json({ error: 'Admin not found' });
     }
 
-    const admin = doc.data()!;
-    const valid = await bcrypt.compare(currentPassword, admin.passwordHash);
+    const valid = await bcrypt.compare(currentPassword, row.password_hash);
     if (!valid) {
       return res.status(401).json({ error: 'Current password is incorrect' });
     }
 
     const passwordHash = await bcrypt.hash(newPassword, 12);
-    await db.collection('admins').doc(req.adminId!).update({ passwordHash });
+    db.prepare('UPDATE admins SET password_hash = ? WHERE id = ?').run(passwordHash, req.adminId!);
 
     return res.json({ message: 'Password changed successfully' });
   } catch (err) {

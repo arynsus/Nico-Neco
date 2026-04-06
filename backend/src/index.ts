@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 
-import { ensureDefaultAdmin } from './config/firebase';
+import { ensureDefaultAdmin } from './config/database';
 import { ensureDataDirs } from './services/dataPaths';
 import authRoutes from './routes/auth';
 import sourcesRoutes from './routes/sources';

@@ -1,97 +1,106 @@
 import { Router } from 'express';
-import { db } from '../config/firebase';
+import { db, rowToTier } from '../config/database';
 import { requireAuth } from '../middleware/auth';
-import { Tier } from '../types';
+import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
 
 // List all tiers
-router.get('/', requireAuth, async (_req, res) => {
+router.get('/', requireAuth, (_req, res) => {
   try {
-    const snapshot = await db.collection('tiers').orderBy('createdAt').get();
-    const tiers = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-    res.json(tiers);
+    const rows = db.prepare('SELECT * FROM tiers ORDER BY created_at').all() as any[];
+    res.json(rows.map(rowToTier));
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch tiers' });
   }
 });
 
 // Create a tier
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, (req, res) => {
   try {
     const { name, description, allowedSourceIds, icon, color, isDefault } = req.body;
     if (!name) return res.status(400).json({ error: 'name is required' });
 
-    // If this is set as default, unset other defaults
+    // Unset other defaults if this is the new default
     if (isDefault) {
-      const existing = await db.collection('tiers').where('isDefault', '==', true).get();
-      const batch = db.batch();
-      existing.docs.forEach((doc) => batch.update(doc.ref, { isDefault: false }));
-      await batch.commit();
+      db.prepare('UPDATE tiers SET is_default = 0 WHERE is_default = 1').run();
     }
 
-    const tier: Omit<Tier, 'id'> = {
-      name,
-      description: description || '',
-      allowedSourceIds: allowedSourceIds || [],
-      icon: icon || 'coffee',
-      color: color || 'primary',
-      isDefault: isDefault || false,
-      createdAt: new Date().toISOString(),
-    };
+    const id = uuidv4();
+    const createdAt = new Date().toISOString();
 
-    const ref = await db.collection('tiers').add(tier);
-    res.status(201).json({ id: ref.id, ...tier });
+    db.prepare(
+      'INSERT INTO tiers (id, name, description, allowed_source_ids, icon, color, is_default, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      id, name, description || '',
+      JSON.stringify(allowedSourceIds || []),
+      icon || 'coffee', color || 'primary',
+      isDefault ? 1 : 0,
+      createdAt,
+    );
+
+    res.status(201).json({ id, name, description: description || '', allowedSourceIds: allowedSourceIds || [], icon: icon || 'coffee', color: color || 'primary', isDefault: !!isDefault, createdAt });
   } catch (err) {
     res.status(500).json({ error: 'Failed to create tier' });
   }
 });
 
 // Update a tier
-router.put('/:id', requireAuth, async (req, res) => {
+router.put('/:id', requireAuth, (req, res) => {
   try {
-    const doc = await db.collection('tiers').doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ error: 'Tier not found' });
+    const existing = db.prepare('SELECT id FROM tiers WHERE id = ?').get(req.params.id) as any;
+    if (!existing) return res.status(404).json({ error: 'Tier not found' });
 
-    const updates: Partial<Tier> = {};
-    const allowed = ['name', 'description', 'allowedSourceIds', 'icon', 'color', 'isDefault'];
-    for (const key of allowed) {
+    // Unset other defaults if this is becoming the default
+    if (req.body.isDefault) {
+      db.prepare('UPDATE tiers SET is_default = 0 WHERE is_default = 1 AND id != ?').run(req.params.id);
+    }
+
+    const setClauses: string[] = [];
+    const values: any[] = [];
+
+    const fieldMap: Record<string, string> = {
+      name: 'name', description: 'description', allowedSourceIds: 'allowed_source_ids',
+      icon: 'icon', color: 'color', isDefault: 'is_default',
+    };
+
+    for (const [key, col] of Object.entries(fieldMap)) {
       if (req.body[key] !== undefined) {
-        (updates as Record<string, unknown>)[key] = req.body[key];
+        setClauses.push(`${col} = ?`);
+        if (key === 'isDefault') {
+          values.push(req.body[key] ? 1 : 0);
+        } else if (key === 'allowedSourceIds') {
+          values.push(JSON.stringify(req.body[key]));
+        } else {
+          values.push(req.body[key]);
+        }
       }
     }
 
-    // If this is set as default, unset other defaults
-    if (updates.isDefault) {
-      const existing = await db.collection('tiers').where('isDefault', '==', true).get();
-      const batch = db.batch();
-      existing.docs.forEach((d) => {
-        if (d.id !== req.params.id) batch.update(d.ref, { isDefault: false });
-      });
-      await batch.commit();
+    if (setClauses.length > 0) {
+      values.push(req.params.id);
+      db.prepare(`UPDATE tiers SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
     }
 
-    await db.collection('tiers').doc(req.params.id).update(updates);
-    const updated = await db.collection('tiers').doc(req.params.id).get();
-    res.json({ id: updated.id, ...updated.data() });
+    const updated = db.prepare('SELECT * FROM tiers WHERE id = ?').get(req.params.id) as any;
+    res.json(rowToTier(updated));
   } catch (err) {
     res.status(500).json({ error: 'Failed to update tier' });
   }
 });
 
 // Delete a tier
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', requireAuth, (req, res) => {
   try {
-    const doc = await db.collection('tiers').doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ error: 'Tier not found' });
+    const row = db.prepare('SELECT id FROM tiers WHERE id = ?').get(req.params.id) as any;
+    if (!row) return res.status(404).json({ error: 'Tier not found' });
 
-    // Check no users are on this tier
-    const usersOnTier = await db.collection('users').where('tierId', '==', req.params.id).limit(1).get();
-    if (!usersOnTier.empty) {
+    const userOnTier = db.prepare('SELECT id FROM users WHERE tier_id = ? LIMIT 1').get(req.params.id) as any;
+    if (userOnTier) {
       return res.status(400).json({ error: 'Cannot delete a tier with users assigned to it' });
     }
 
-    await db.collection('tiers').doc(req.params.id).delete();
+    db.prepare('DELETE FROM tiers WHERE id = ?').run(req.params.id);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete tier' });

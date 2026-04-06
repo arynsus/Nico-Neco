@@ -7,14 +7,11 @@ services:
     container_name: nico-neco-backend
     restart: unless-stopped
     volumes:
-      # Named volume for persistent data storage (e.g. user configs, rule providers)
+      # Named volume for persistent data storage (SQLite database, user configs, rule providers)
       - nico-neco-data:/app/data
-      # Read-only bind mount for the Firebase service account
-      - ./backend/firebase-service-account.json:/app/firebase-service-account.json:ro
     environment:
       - PORT=3000
       - NODE_ENV=production
-      - FIREBASE_SERVICE_ACCOUNT_PATH=/app/firebase-service-account.json
       - CORS_ORIGIN=https://nico-neco.mirhardt.com:1443
 
   frontend:

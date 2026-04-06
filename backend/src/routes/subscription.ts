@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import fs from 'fs/promises';
-import { db } from '../config/firebase';
+import { db } from '../config/database';
 import { generateAndCacheUserConfig, generateClashConfig } from '../services/configGenerator';
 import { getUserConfigFile, slugify } from '../services/dataPaths';
 
@@ -16,48 +16,37 @@ router.get('/:token', async (req, res) => {
   try {
     const { token } = req.params;
 
-    const snapshot = await db
-      .collection('users')
-      .where('subscriptionToken', '==', token)
-      .limit(1)
-      .get();
+    const row = db
+      .prepare('SELECT * FROM users WHERE subscription_token = ? LIMIT 1')
+      .get(token) as any;
 
-    if (snapshot.empty) {
+    if (!row) {
       return res.status(404).send('# Invalid subscription token');
     }
 
-    const userDoc = snapshot.docs[0];
-    const user = userDoc.data();
-
-    if (user.isActive === false) {
+    if (row.is_active === 0) {
       return res.status(403).send('# Subscription is inactive');
     }
 
-    const slug = slugify(user.name || 'user');
+    const slug = slugify(row.name || 'user');
     const file = getUserConfigFile(slug);
 
-    // Try cache first
     let yamlConfig: string;
     try {
       yamlConfig = await fs.readFile(file, 'utf-8');
     } catch {
-      // Cache miss: build on demand and cache it
       try {
-        await generateAndCacheUserConfig(userDoc.id);
+        await generateAndCacheUserConfig(row.id);
         yamlConfig = await fs.readFile(file, 'utf-8');
-      } catch (err: any) {
-        // Last-ditch: generate without caching
-        yamlConfig = await generateClashConfig(userDoc.id);
+      } catch {
+        yamlConfig = await generateClashConfig(row.id);
       }
     }
 
     res.setHeader('Content-Type', 'text/yaml; charset=utf-8');
     res.setHeader('Content-Disposition', `inline; filename="${slug}.yaml"`);
     res.setHeader('Profile-Update-Interval', '6');
-    res.setHeader(
-      'Subscription-Userinfo',
-      `upload=0; download=0; total=0; expire=0`,
-    );
+    res.setHeader('Subscription-Userinfo', 'upload=0; download=0; total=0; expire=0');
 
     return res.send(yamlConfig);
   } catch (err: any) {
