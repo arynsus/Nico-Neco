@@ -102,10 +102,12 @@ function buildConfig(
     'socks-port': 7891,
     mode: 'rule',
     'external-controller': '127.0.0.1:9090',
-    ipv6: false,
+    ipv6: true,
     dns: {
       enable: true,
+      ipv6: true,
       listen: '0.0.0.0:53',
+      'enhanced-mode': 'redir-host',
       'default-nameserver': ['114.114.114.114', '8.8.8.8'],
       'fake-ip-range': '198.18.0.1/16',
       fallback: ['1.1.1.1', '8.8.8.8'],
@@ -167,6 +169,8 @@ function buildRules(
     'IP-CIDR,100.64.0.0/10,DIRECT',
     'IP-CIDR6,::1/128,DIRECT',
     'IP-CIDR6,fc00::/7,DIRECT',
+    'IP-CIDR6,fe80::/10,DIRECT',
+    'IP-CIDR6,2000::/3,DIRECT'
   );
 
   for (const category of categories) {
