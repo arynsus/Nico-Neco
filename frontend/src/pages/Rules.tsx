@@ -69,6 +69,14 @@ export default function Rules() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [fetchingProvider, setFetchingProvider] = useState<string | null>(null);
 
+  // Local network rules state
+  const [localNetworkRules, setLocalNetworkRules] = useState<RuleEntry[]>([]);
+  const [lanExpanded, setLanExpanded] = useState(false);
+  const [lanEditing, setLanEditing] = useState(false);
+  const [lanDraft, setLanDraft] = useState<RuleEntry[]>([]);
+  const [newLanRule, setNewLanRule] = useState({ type: 'IP-CIDR', value: '' });
+  const [lanSaving, setLanSaving] = useState(false);
+
   const [form, setForm] = useState({
     name: '', icon: 'category', description: '', extraRules: [] as RuleEntry[], order: 99,
   });
@@ -79,12 +87,56 @@ export default function Rules() {
 
   async function load() {
     try {
-      const data = await rulesApi.list();
-      setCategories(data);
+      const [cats, lanRules] = await Promise.all([rulesApi.list(), rulesApi.getLocalNetwork()]);
+      setCategories(cats);
+      setLocalNetworkRules(lanRules);
     } catch (err) {
       console.error(err);
     } finally {
       setLoading(false);
+    }
+  }
+
+  function openLanEdit() {
+    setLanDraft([...localNetworkRules]);
+    setNewLanRule({ type: 'IP-CIDR', value: '' });
+    setLanEditing(true);
+  }
+
+  function addLanRule() {
+    if (!newLanRule.value.trim()) return;
+    setLanDraft((prev) => [...prev, { type: newLanRule.type, value: newLanRule.value.trim() }]);
+    setNewLanRule({ ...newLanRule, value: '' });
+  }
+
+  function removeLanRule(index: number) {
+    setLanDraft((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  async function saveLanRules() {
+    setLanSaving(true);
+    try {
+      const updated = await rulesApi.updateLocalNetwork(lanDraft);
+      setLocalNetworkRules(updated);
+      setLanEditing(false);
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setLanSaving(false);
+    }
+  }
+
+  async function resetLanRules() {
+    if (!confirm('Reset local network rules to defaults?')) return;
+    setLanSaving(true);
+    try {
+      const updated = await rulesApi.resetLocalNetwork();
+      setLocalNetworkRules(updated);
+      setLanDraft(updated);
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setLanSaving(false);
     }
   }
 
@@ -242,16 +294,121 @@ export default function Rules() {
 
       {/* Route visualization */}
       <div className="space-y-3 mb-8">
-        {/* Fixed: LAN */}
-        <div className="card bg-surface-container-low flex items-center gap-4 opacity-60">
-          <div className="w-10 h-10 rounded-xl bg-surface-container-highest flex items-center justify-center">
-            <Icon name="lan" />
+        {/* Local Network (editable, always DIRECT) */}
+        <div className="card bg-surface-container-low">
+          <div
+            className="flex items-center gap-4 cursor-pointer"
+            onClick={() => setLanExpanded((v) => !v)}
+          >
+            <div className="w-10 h-10 rounded-xl bg-surface-container-highest flex items-center justify-center">
+              <Icon name="lan" />
+            </div>
+            <div className="flex-1">
+              <span className="font-semibold text-sm">Local Network</span>
+              <span className="text-xs text-on-surface-variant ml-2">
+                {localNetworkRules.length} rule{localNetworkRules.length !== 1 ? 's' : ''}
+              </span>
+            </div>
+            <span className="chip-outline">DIRECT</span>
+            <button
+              onClick={(e) => { e.stopPropagation(); openLanEdit(); setLanExpanded(true); }}
+              className="btn-ghost"
+              title="Edit local network rules"
+            >
+              <Icon name="edit" />
+            </button>
           </div>
-          <div className="flex-1">
-            <span className="font-semibold text-sm">Local Network</span>
-            <span className="text-xs text-on-surface-variant ml-2">192.168.0.0/16, 10.0.0.0/8, etc.</span>
-          </div>
-          <span className="chip-outline">DIRECT</span>
+
+          {lanExpanded && (
+            <div className="mt-4 pt-4 border-t border-outline-variant/10">
+              {lanEditing ? (
+                <div className="space-y-3">
+                  {/* Draft rules list */}
+                  <div className="max-h-64 overflow-y-auto space-y-1">
+                    {lanDraft.map((rule, i) => (
+                      <div key={i} className="flex items-center gap-2 px-3 py-2 bg-surface-container rounded-lg text-sm group">
+                        <span className="text-primary font-bold font-mono text-xs">{rule.type}</span>
+                        <span className="flex-1 font-mono text-xs text-on-surface">{rule.value}</span>
+                        <span className="text-xs text-on-surface-variant shrink-0 mr-1">→ DIRECT</span>
+                        <button
+                          type="button"
+                          onClick={() => removeLanRule(i)}
+                          className="opacity-0 group-hover:opacity-100 text-error transition-opacity"
+                        >
+                          <span className="material-symbols-outlined text-sm">close</span>
+                        </button>
+                      </div>
+                    ))}
+                    {lanDraft.length === 0 && (
+                      <p className="text-on-surface-variant text-xs text-center py-4 italic">No rules.</p>
+                    )}
+                  </div>
+
+                  {/* Add rule row */}
+                  <div className="flex gap-2">
+                    <select
+                      className="input-field !w-auto"
+                      value={newLanRule.type}
+                      onChange={(e) => setNewLanRule({ ...newLanRule, type: e.target.value })}
+                    >
+                      {ruleTypes.map((rt) => (
+                        <option key={rt} value={rt}>{rt}</option>
+                      ))}
+                    </select>
+                    <input
+                      className="input-field flex-1"
+                      placeholder="e.g., 192.168.1.0/24"
+                      value={newLanRule.value}
+                      onChange={(e) => setNewLanRule({ ...newLanRule, value: e.target.value })}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addLanRule(); } }}
+                    />
+                    <span className="flex items-center text-xs text-on-surface-variant font-mono shrink-0">→ DIRECT</span>
+                    <button type="button" onClick={addLanRule} className="btn-primary !px-4">
+                      <Icon name="add" />
+                    </button>
+                  </div>
+
+                  {/* Action buttons */}
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={saveLanRules}
+                      disabled={lanSaving}
+                      className="btn-primary flex-1"
+                    >
+                      {lanSaving ? 'Saving…' : 'Save'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={resetLanRules}
+                      disabled={lanSaving}
+                      className="btn-secondary"
+                      title="Reset to defaults"
+                    >
+                      <Icon name="restart_alt" />
+                      <span>Reset to default</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLanEditing(false)}
+                      className="btn-ghost"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {localNetworkRules.map((rule, i) => (
+                    <span key={i} className="inline-flex items-center gap-1 px-2 py-1 bg-surface-container-highest rounded-lg text-xs font-mono">
+                      <span className="text-primary font-bold">{rule.type}</span>
+                      <span className="text-on-surface-variant">{rule.value}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Service categories */}

@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import yaml from 'js-yaml';
-import { db, rowToCategory } from '../config/database';
+import { db, rowToCategory, getLocalNetworkRules } from '../config/database';
 import { ProxyNode, ServiceCategory, ClashConfig, ProxyGroup, RuleEntry } from '../types';
 import { fetchProxiesForTier } from './proxyAggregator';
 import { readProviderRules } from './ruleProviders';
@@ -161,17 +161,9 @@ function buildRules(
 ): string[] {
   const rules: string[] = [];
 
-  rules.push(
-    'IP-CIDR,127.0.0.0/8,DIRECT',
-    'IP-CIDR,192.168.0.0/16,DIRECT',
-    'IP-CIDR,10.0.0.0/8,DIRECT',
-    'IP-CIDR,172.16.0.0/12,DIRECT',
-    'IP-CIDR,100.64.0.0/10,DIRECT',
-    'IP-CIDR6,::1/128,DIRECT',
-    'IP-CIDR6,fc00::/7,DIRECT',
-    'IP-CIDR6,fe80::/10,DIRECT',
-    'DOMAIN-SUFFIX,mirhardt.com,DIRECT'
-  );
+  for (const rule of getLocalNetworkRules()) {
+    rules.push(`${rule.type},${rule.value},DIRECT`);
+  }
 
   for (const category of categories) {
     const entries = resolvedRules.get(category.id) || [];

@@ -71,6 +71,11 @@ db.exec(`
     order_num      INTEGER NOT NULL DEFAULT 99,
     created_at     TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
 `);
 
 // ─── Row deserializers ────────────────────────────────────────────────────────
@@ -215,6 +220,37 @@ function maybeImportFromFirebase() {
 }
 
 maybeImportFromFirebase();
+
+// ─── Local network rules ──────────────────────────────────────────────────────
+
+export const DEFAULT_LOCAL_NETWORK_RULES: RuleEntry[] = [
+  { type: 'IP-CIDR',        value: '127.0.0.0/8' },
+  { type: 'IP-CIDR',        value: '192.168.0.0/16' },
+  { type: 'IP-CIDR',        value: '10.0.0.0/8' },
+  { type: 'IP-CIDR',        value: '172.16.0.0/12' },
+  { type: 'IP-CIDR',        value: '100.64.0.0/10' },
+  { type: 'IP-CIDR6',       value: '::1/128' },
+  { type: 'IP-CIDR6',       value: 'fc00::/7' },
+  { type: 'IP-CIDR6',       value: 'fe80::/10' },
+  { type: 'DOMAIN-SUFFIX',  value: 'mirhardt.com' },
+];
+
+// Seed defaults on first run
+const existing = db.prepare("SELECT value FROM settings WHERE key = 'local_network_rules'").get();
+if (!existing) {
+  db.prepare("INSERT INTO settings (key, value) VALUES ('local_network_rules', ?)")
+    .run(JSON.stringify(DEFAULT_LOCAL_NETWORK_RULES));
+}
+
+export function getLocalNetworkRules(): RuleEntry[] {
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'local_network_rules'").get() as any;
+  return row ? JSON.parse(row.value) as RuleEntry[] : [...DEFAULT_LOCAL_NETWORK_RULES];
+}
+
+export function setLocalNetworkRules(rules: RuleEntry[]): void {
+  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('local_network_rules', ?)")
+    .run(JSON.stringify(rules));
+}
 
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
 

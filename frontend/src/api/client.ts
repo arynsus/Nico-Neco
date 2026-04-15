@@ -92,6 +92,12 @@ export const rulesApi = {
     request<any>(`/rules/${categoryId}/providers/${providerId}/fetch`, { method: 'POST' }),
   removeProvider: (categoryId: string, providerId: string) =>
     request<void>(`/rules/${categoryId}/providers/${providerId}`, { method: 'DELETE' }),
+  // Local network rules (always DIRECT)
+  getLocalNetwork: () => request<any[]>('/rules/local-network'),
+  updateLocalNetwork: (rules: any[]) =>
+    request<any[]>('/rules/local-network', { method: 'PUT', body: JSON.stringify(rules) }),
+  resetLocalNetwork: () =>
+    request<any[]>('/rules/local-network/reset', { method: 'POST' }),
 };
 
 // Cached user config files

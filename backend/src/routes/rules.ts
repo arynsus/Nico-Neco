@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
-import { db, rowToCategory } from '../config/database';
+import { db, rowToCategory, getLocalNetworkRules, setLocalNetworkRules, DEFAULT_LOCAL_NETWORK_RULES } from '../config/database';
 import { requireAuth } from '../middleware/auth';
 import { v4 as uuidv4 } from 'uuid';
-import { ServiceCategory, RuleProvider } from '../types';
+import { ServiceCategory, RuleProvider, RuleEntry } from '../types';
 import { generatePreviewConfig } from '../services/configGenerator';
 import {
   fetchAndCacheProvider,
@@ -22,6 +22,46 @@ async function enrichCategory(cat: ServiceCategory) {
     ruleProviders: cat.ruleProviders.map((p) => ({ ...p, status: statuses[p.id] })),
   };
 }
+
+// ─── Local network rules (always DIRECT, locked) ─────────────────────────────
+
+// Get current local network rules
+router.get('/local-network', requireAuth, (_req, res) => {
+  try {
+    res.json(getLocalNetworkRules());
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch local network rules' });
+  }
+});
+
+// Replace local network rules
+router.put('/local-network', requireAuth, (req, res) => {
+  try {
+    const rules = req.body;
+    if (!Array.isArray(rules)) return res.status(400).json({ error: 'Body must be an array of rules' });
+    for (const r of rules) {
+      if (typeof r.type !== 'string' || typeof r.value !== 'string') {
+        return res.status(400).json({ error: 'Each rule must have type and value strings' });
+      }
+    }
+    setLocalNetworkRules(rules as RuleEntry[]);
+    res.json(rules);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update local network rules' });
+  }
+});
+
+// Reset local network rules to defaults
+router.post('/local-network/reset', requireAuth, (_req, res) => {
+  try {
+    setLocalNetworkRules([...DEFAULT_LOCAL_NETWORK_RULES]);
+    res.json([...DEFAULT_LOCAL_NETWORK_RULES]);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to reset local network rules' });
+  }
+});
+
+// ─── Service categories ───────────────────────────────────────────────────────
 
 // List all service categories
 router.get('/', requireAuth, async (_req, res) => {
