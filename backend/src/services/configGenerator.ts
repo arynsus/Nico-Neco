@@ -170,6 +170,7 @@ function buildRules(
     'IP-CIDR6,::1/128,DIRECT',
     'IP-CIDR6,fc00::/7,DIRECT',
     'IP-CIDR6,fe80::/10,DIRECT',
+    'DOMAIN-SUFFIX,mirhardt.com,DIRECT'
   );
 
   for (const category of categories) {
